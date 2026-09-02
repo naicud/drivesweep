@@ -8,7 +8,7 @@ Apple notarization is a paid distribution service because it requires membership
 
 For a free local installation, use either:
 
-- Homebrew with `--no-quarantine`; or
+- Homebrew followed by removal of quarantine from only `/Applications/DriveSweep.app`; or
 - a trusted DMG with its SHA-256 checked, followed by Control-click → **Open** or removal of quarantine from `/Applications/DriveSweep.app`; or
 - a local build from this repository.
 

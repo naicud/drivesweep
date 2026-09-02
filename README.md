@@ -37,16 +37,16 @@ Every push and pull request is compiled by the included GitHub Actions workflow.
 
 ```sh
 brew tap naicud/drivesweep https://github.com/naicud/drivesweep
-brew install --cask --no-quarantine naicud/drivesweep/drivesweep
+brew install --cask naicud/drivesweep/drivesweep
 ```
 
-`--no-quarantine` avoids adding macOS's download-quarantine flag to this local installation, so the app can open without the download warning. It does **not** make the app Apple-notarized or certify it as safe. If you already installed it without that option, remove the flag from this specific local app copy:
+Current Homebrew versions do not provide a `--no-quarantine` install flag. After reviewing the project and installing it, remove the download-quarantine flag from this specific local app copy:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/DriveSweep.app
 ```
 
-See the full [Homebrew instructions](docs/INSTALLATION.md#homebrew) and [security notes](docs/SECURITY.md).
+This does **not** make DriveSweep Apple-notarized or certify it as safe. See the full [Homebrew instructions](docs/INSTALLATION.md#homebrew) and [security notes](docs/SECURITY.md).
 
 ### DMG
 

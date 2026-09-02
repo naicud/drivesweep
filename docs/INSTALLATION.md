@@ -8,16 +8,18 @@ Only trust a release downloaded from [the official DriveSweep GitHub releases pa
 
 ```sh
 brew tap naicud/drivesweep https://github.com/naicud/drivesweep
-brew install --cask --no-quarantine naicud/drivesweep/drivesweep
+brew install --cask naicud/drivesweep/drivesweep
+xattr -dr com.apple.quarantine /Applications/DriveSweep.app
 open -a DriveSweep
 ```
 
-`--no-quarantine` tells Homebrew not to apply macOS's download-quarantine extended attribute to this installation. It prevents the normal downloaded-app Gatekeeper dialog for this local copy. It does not notarize the application or prove it is safe: read the source and release information before choosing to use it.
+Current Homebrew versions do not offer a `--no-quarantine` option. The `xattr` command above removes macOS's download-quarantine attribute from only this installed application. It allows this local copy to open without the downloaded-app warning; it does not notarize the application or prove it is safe. Read the source and release information before choosing to use it.
 
-To update later, use the same option:
+To update later, use:
 
 ```sh
-brew upgrade --cask --no-quarantine naicud/drivesweep/drivesweep
+brew upgrade --cask naicud/drivesweep/drivesweep
+xattr -dr com.apple.quarantine /Applications/DriveSweep.app
 ```
 
 To remove it:
