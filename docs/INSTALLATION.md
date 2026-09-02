@@ -1,6 +1,6 @@
 # Installation
 
-DriveSweep is free and open source. The public `v0.1.0` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
+DriveSweep is free and open source. The public `v0.1.1` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
 
 Only trust a release downloaded from [the official DriveSweep GitHub releases page](https://github.com/naicud/drivesweep/releases), or build the public source yourself.
 
@@ -31,13 +31,13 @@ brew uninstall --cask drivesweep
 ## DMG
 
 1. Download `DriveSweep.dmg` from the official [releases page](https://github.com/naicud/drivesweep/releases).
-2. Verify the download before opening it. For `v0.1.0`:
+2. Verify the download before opening it. For `v0.1.1`:
 
    ```sh
    shasum -a 256 ~/Downloads/DriveSweep.dmg
    ```
 
-   The expected digest is `463d1811316342b88264e3346c0fd2b2585c48328a9e25c7480c55c0bef69465`.
+   The expected digest is `80efe79671f4a3a7367e7c74137399c8fb13d604288f5efcf741afbfc20e6a7c`.
 3. Open the DMG and drag `DriveSweep.app` to `/Applications`.
 4. Use either one of these local launch choices:
 
@@ -71,6 +71,6 @@ xcode-select --install
 
 ## First use
 
-When DriveSweep opens, it appears as a broom icon in the menu bar. It automatically cleans an eligible drive once when that drive mounts, if the preference is enabled. Use **Clean and eject** only after file copying finishes, for a final cleanup pass.
+When DriveSweep opens, its dashboard appears immediately and a broom icon stays in the menu bar. It automatically cleans an eligible drive once when that drive mounts, if the preference is enabled. Use **Clean and eject** only after file copying finishes, for a final cleanup pass.
 
 Use a disposable test USB drive first. DriveSweep deliberately ignores internal disks, disk images, network shares, read-only media, and names you exclude in Preferences.

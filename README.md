@@ -7,6 +7,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 ## What it does
 
 - Detects external drives at mount time and can clean them automatically.
+- Opens a visible dashboard immediately, while keeping a broom menu-bar icon for quick actions.
 - Removes AppleDouble `._*` files through macOS' `dot_clean` utility.
 - Optionally removes `.DS_Store`, `.Trashes`, `.Spotlight-V100`, and `.fseventsd`.
 - Lists each eligible drive in the menu bar with **Clean now** and **Clean and eject** actions.
@@ -20,7 +21,7 @@ Removing `._*` files may discard macOS-only metadata such as custom icons or leg
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.1.0` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.1.1` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -52,10 +53,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.1.0`, the published SHA-256 is:
+For `v0.1.1`, the published SHA-256 is:
 
 ```text
-463d1811316342b88264e3346c0fd2b2585c48328a9e25c7480c55c0bef69465
+80efe79671f4a3a7367e7c74137399c8fb13d604288f5efcf741afbfc20e6a7c
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.

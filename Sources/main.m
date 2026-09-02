@@ -11,6 +11,8 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
 
 @interface DriveSweepController : NSObject <NSApplicationDelegate>
 @property (strong) NSStatusItem *statusItem;
+@property (strong) NSWindow *dashboardWindow;
+@property (strong) NSTextField *dashboardStatusLabel;
 @property (strong) NSWindow *preferencesWindow;
 @property (strong) NSMutableSet<NSString *> *handledMounts;
 @property (strong) NSTimer *scanTimer;
@@ -31,9 +33,11 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
 
     self.handledMounts = [NSMutableSet set];
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.image = [NSImage imageNamed:@"AppIcon"];
+    NSImage *menuIcon = [NSImage imageWithSystemSymbolName:@"broom.fill" accessibilityDescription:@"DriveSweep"];
+    menuIcon.template = YES;
+    self.statusItem.button.image = menuIcon;
     self.statusItem.button.toolTip = @"DriveSweep — pulisci dischi esterni";
-    self.statusItem.button.title = @"";
+    if (!menuIcon) self.statusItem.button.title = @"DS";
     [self rebuildMenu];
     [[UNUserNotificationCenter currentNotificationCenter]
         requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
@@ -44,6 +48,7 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
     [workspaceCenter addObserver:self selector:@selector(volumeUnmounted:) name:NSWorkspaceDidUnmountNotification object:nil];
     self.scanTimer = [NSTimer scheduledTimerWithTimeInterval:15 target:self selector:@selector(checkMountedVolumes) userInfo:nil repeats:YES];
     [self checkMountedVolumes];
+    [self showDashboard:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -186,6 +191,10 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
 
 - (void)rebuildMenu {
     NSMenu *menu = [[NSMenu alloc] init];
+    NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Apri DriveSweep" action:@selector(showDashboard:) keyEquivalent:@"o"];
+    open.target = self;
+    [menu addItem:open];
+    [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *cleanAll = [[NSMenuItem alloc] initWithTitle:@"Pulisci tutti i dischi esterni" action:@selector(cleanAll:) keyEquivalent:@"c"];
     cleanAll.target = self;
     [menu addItem:cleanAll];
@@ -215,6 +224,7 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
     NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"Esci da DriveSweep" action:@selector(terminate:) keyEquivalent:@"q"];
     [menu addItem:quit];
     self.statusItem.menu = menu;
+    [self refreshDashboard];
 }
 
 - (void)cleanAll:(id)sender { for (NSURL *url in [self externalVolumes]) [self cleanVolume:url source:@"manuale"]; }
@@ -227,6 +237,61 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
     if (![[NSWorkspace sharedWorkspace] unmountAndEjectDeviceAtURL:url error:&error]) {
         [self notify:[NSString stringWithFormat:@"Non riesco a espellere %@: %@", url.lastPathComponent, error.localizedDescription]];
     }
+}
+
+- (void)showDashboard:(id)sender {
+    if (!self.dashboardWindow) {
+        self.dashboardWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 260)
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+            backing:NSBackingStoreBuffered defer:NO];
+        self.dashboardWindow.title = @"DriveSweep";
+        self.dashboardWindow.minSize = NSMakeSize(500, 260);
+
+        NSView *content = self.dashboardWindow.contentView;
+        NSTextField *title = [NSTextField labelWithString:@"DriveSweep è attivo"];
+        title.frame = NSMakeRect(28, 190, 440, 32);
+        title.font = [NSFont boldSystemFontOfSize:24];
+        [content addSubview:title];
+
+        NSTextField *description = [NSTextField wrappingLabelWithString:@"Pulisce solo i dischi fisici esterni. Quando hai finito di copiare i file, usa “Pulisci ed espelli” dal menu della scopa nella barra menu."];
+        description.frame = NSMakeRect(28, 132, 444, 46);
+        description.font = [NSFont systemFontOfSize:13];
+        [content addSubview:description];
+
+        self.dashboardStatusLabel = [NSTextField labelWithString:@""];
+        self.dashboardStatusLabel.frame = NSMakeRect(28, 94, 444, 24);
+        self.dashboardStatusLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+        [content addSubview:self.dashboardStatusLabel];
+
+        NSButton *clean = [[NSButton alloc] initWithFrame:NSMakeRect(28, 36, 176, 34)];
+        clean.title = @"Pulisci tutti";
+        clean.bezelStyle = NSBezelStyleRounded;
+        clean.target = self;
+        clean.action = @selector(cleanAll:);
+        [content addSubview:clean];
+
+        NSButton *preferences = [[NSButton alloc] initWithFrame:NSMakeRect(216, 36, 120, 34)];
+        preferences.title = @"Preferenze…";
+        preferences.bezelStyle = NSBezelStyleRounded;
+        preferences.target = self;
+        preferences.action = @selector(showPreferences:);
+        [content addSubview:preferences];
+    }
+    [self refreshDashboard];
+    [self.dashboardWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)refreshDashboard {
+    if (!self.dashboardStatusLabel) return;
+    NSArray<NSURL *> *volumes = [self externalVolumes];
+    if (volumes.count == 0) {
+        self.dashboardStatusLabel.stringValue = @"Nessun disco esterno idoneo collegato.";
+        return;
+    }
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSURL *volume in volumes) [names addObject:volume.lastPathComponent];
+    self.dashboardStatusLabel.stringValue = [NSString stringWithFormat:@"Dischi esterni rilevati: %@", [names componentsJoinedByString:@", "]];
 }
 
 - (NSButton *)checkbox:(NSString *)title key:(NSString *)key y:(CGFloat)y {
