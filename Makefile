@@ -2,7 +2,7 @@ APP_NAME := DriveSweep
 BUILD_DIR := build
 APP := $(BUILD_DIR)/$(APP_NAME).app
 
-.PHONY: build run clean dmg
+.PHONY: build run clean dmg test
 
 build:
 	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
@@ -22,6 +22,10 @@ dmg: build
 	trap 'rm -rf "$$stage"' EXIT; \
 	ditto --norsrc --noextattr "$(APP)" "$$stage/$(APP_NAME).app"; \
 	hdiutil create -volname "$(APP_NAME)" -srcfolder "$$stage" -ov -format UDZO "$(BUILD_DIR)/$(APP_NAME).dmg"
+
+test: build
+	plutil -lint "$(APP)/Contents/Info.plist"
+	codesign --verify --deep --strict --verbose=2 "$(APP)"
 
 clean:
 	rm -rf "$(BUILD_DIR)"
