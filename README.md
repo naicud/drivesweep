@@ -43,7 +43,7 @@ brew install --cask naicud/drivesweep/drivesweep
 Current Homebrew versions do not provide a `--no-quarantine` install flag. After reviewing the project and installing it, remove the download-quarantine flag from this specific local app copy:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+xattr -d com.apple.quarantine /Applications/DriveSweep.app
 ```
 
 This does **not** make DriveSweep Apple-notarized or certify it as safe. See the full [Homebrew instructions](docs/INSTALLATION.md#homebrew) and [security notes](docs/SECURITY.md).

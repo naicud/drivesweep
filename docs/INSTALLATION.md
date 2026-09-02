@@ -9,7 +9,7 @@ Only trust a release downloaded from [the official DriveSweep GitHub releases pa
 ```sh
 brew tap naicud/drivesweep https://github.com/naicud/drivesweep
 brew install --cask naicud/drivesweep/drivesweep
-xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+xattr -d com.apple.quarantine /Applications/DriveSweep.app
 open -a DriveSweep
 ```
 
@@ -19,7 +19,7 @@ To update later, use:
 
 ```sh
 brew upgrade --cask naicud/drivesweep/drivesweep
-xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+    xattr -d com.apple.quarantine /Applications/DriveSweep.app
 ```
 
 To remove it:
@@ -45,7 +45,7 @@ brew uninstall --cask drivesweep
    - in Terminal, remove quarantine from only this app copy:
 
      ```sh
-     xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+xattr -d com.apple.quarantine /Applications/DriveSweep.app
      open -a DriveSweep
      ```
 

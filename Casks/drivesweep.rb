@@ -7,7 +7,7 @@ cask "drivesweep" do
   desc "Clean macOS metadata from external drives"
   homepage "https://github.com/naicud/drivesweep"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "DriveSweep.app"
 
@@ -15,7 +15,7 @@ cask "drivesweep" do
     DriveSweep is free and open source, but this release is not Apple-notarized.
     Current Homebrew versions have no --no-quarantine install option. After
     reviewing this project, remove the quarantine flag only from this app copy:
-      xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+      xattr -d com.apple.quarantine /Applications/DriveSweep.app
     Review https://github.com/naicud/drivesweep/blob/main/docs/SECURITY.md
     before bypassing quarantine for any downloaded app.
   EOS
