@@ -31,10 +31,16 @@ Every push and pull request is compiled by the included GitHub Actions workflow.
 
 ```sh
 brew tap naicud/drivesweep https://github.com/naicud/drivesweep
-brew install --cask naicud/drivesweep/drivesweep
+brew install --cask --no-quarantine naicud/drivesweep/drivesweep
 ```
 
-The first public release is ad-hoc signed but not notarized. If macOS blocks its first launch, Control-click **DriveSweep.app** in Applications, choose **Open**, then confirm **Open**.
+The first public release is ad-hoc signed but not notarized. `--no-quarantine` lets you install and open it on your own Mac without the Gatekeeper download warning. If you already installed it without that option, run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+```
+
+This removes only the download-quarantine flag from this local app copy; it does not claim Apple verification. A public release with Apple verification requires Developer ID signing and notarization.
 
 ### DMG
 

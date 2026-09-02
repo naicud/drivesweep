@@ -13,7 +13,8 @@ cask "drivesweep" do
 
   caveats <<~EOS
     DriveSweep is ad-hoc signed but not notarized for this first release.
-    If macOS blocks its first launch, Control-click the app in Applications,
-    choose Open, then confirm Open.
+    Install with --no-quarantine to launch it on your local Mac without the
+    Gatekeeper download warning. Alternatively, remove quarantine from the
+    installed copy: xattr -dr com.apple.quarantine /Applications/DriveSweep.app
   EOS
 end
