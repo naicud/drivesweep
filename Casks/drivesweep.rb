@@ -12,9 +12,12 @@ cask "drivesweep" do
   app "DriveSweep.app"
 
   caveats <<~EOS
-    DriveSweep is ad-hoc signed but not notarized for this first release.
-    Install with --no-quarantine to launch it on your local Mac without the
-    Gatekeeper download warning. Alternatively, remove quarantine from the
-    installed copy: xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+    DriveSweep is free and open source, but this release is not Apple-notarized.
+    --no-quarantine avoids the downloaded-app warning for this local install;
+    it does not make an Apple verification claim. Alternatively, remove the
+    quarantine flag only from this app copy:
+      xattr -dr com.apple.quarantine /Applications/DriveSweep.app
+    Review https://github.com/naicud/drivesweep/blob/main/docs/SECURITY.md
+    before bypassing quarantine for any downloaded app.
   EOS
 end
