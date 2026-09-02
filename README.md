@@ -30,15 +30,15 @@ Every push and pull request is compiled by the included GitHub Actions workflow.
 ### Homebrew
 
 ```sh
-brew tap naicud/disk-cleaner-macos https://github.com/naicud/disk-cleaner-macos
-brew install --cask naicud/disk-cleaner-macos/drivesweep
+brew tap naicud/drivesweep https://github.com/naicud/drivesweep
+brew install --cask naicud/drivesweep/drivesweep
 ```
 
 The first public release is ad-hoc signed but not notarized. If macOS blocks its first launch, Control-click **DriveSweep.app** in Applications, choose **Open**, then confirm **Open**.
 
 ### DMG
 
-Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/disk-cleaner-macos/releases), open it, and move the app to Applications.
+Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
 ## Build and run
 
