@@ -2,7 +2,7 @@ APP_NAME := DriveSweep
 BUILD_DIR := build
 APP := $(BUILD_DIR)/$(APP_NAME).app
 
-.PHONY: build run clean dmg test
+.PHONY: build run clean dmg test cleanup-harness
 
 build:
 	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
@@ -23,9 +23,14 @@ dmg: build
 	ditto --norsrc --noextattr "$(APP)" "$$stage/$(APP_NAME).app"; \
 	hdiutil create -volname "$(APP_NAME)" -srcfolder "$$stage" -ov -format UDZO "$(BUILD_DIR)/$(APP_NAME).dmg"
 
-test: build
+cleanup-harness:
+	mkdir -p "$(BUILD_DIR)"
+	clang -fobjc-arc -framework Cocoa -framework UserNotifications -o "$(BUILD_DIR)/cleanup-harness" Tests/cleanup_harness.m
+
+test: build cleanup-harness
 	plutil -lint "$(APP)/Contents/Info.plist"
 	codesign --verify --deep --strict --verbose=2 "$(APP)"
+	"$(BUILD_DIR)/cleanup-harness"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

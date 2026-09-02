@@ -1,6 +1,6 @@
 # Installation
 
-DriveSweep is free and open source. The public `v0.1.1` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
+DriveSweep is free and open source. The public `v0.2.0` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
 
 Only trust a release downloaded from [the official DriveSweep GitHub releases page](https://github.com/naicud/drivesweep/releases), or build the public source yourself.
 
@@ -31,13 +31,13 @@ brew uninstall --cask drivesweep
 ## DMG
 
 1. Download `DriveSweep.dmg` from the official [releases page](https://github.com/naicud/drivesweep/releases).
-2. Verify the download before opening it. For `v0.1.1`:
+2. Verify the download before opening it. For `v0.2.0`:
 
    ```sh
    shasum -a 256 ~/Downloads/DriveSweep.dmg
    ```
 
-   The expected digest is `80efe79671f4a3a7367e7c74137399c8fb13d604288f5efcf741afbfc20e6a7c`.
+   The expected digest is `28f6bc913c8290b3ba2ae19333ed560082bb00e246cdbeac83bdb920fa856065`.
 3. Open the DMG and drag `DriveSweep.app` to `/Applications`.
 4. Use either one of these local launch choices:
 
@@ -71,6 +71,6 @@ xcode-select --install
 
 ## First use
 
-When DriveSweep opens, its dashboard appears immediately and a broom icon stays in the menu bar. It automatically cleans an eligible drive once when that drive mounts, if the preference is enabled. Use **Clean and eject** only after file copying finishes, for a final cleanup pass.
+When DriveSweep opens, its dashboard appears immediately and a broom icon stays in the menu bar. Automatic cleanup is off by default. If you enable it in Preferences, DriveSweep waits briefly after mount and cleans each stable eligible mount once. `.DS_Store` cleanup is enabled by default; AppleDouble and every additional metadata category are opt-in. Use **Clean and eject** only after file copying finishes, for a final cleanup pass.
 
 Use a disposable test USB drive first. DriveSweep deliberately ignores internal disks, disk images, network shares, read-only media, and names you exclude in Preferences.
