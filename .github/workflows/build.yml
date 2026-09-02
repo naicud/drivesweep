@@ -1,0 +1,20 @@
+name: Build macOS app
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build application and disk image
+        run: make dmg
+      - name: Verify signature
+        run: codesign --verify --deep --strict --verbose=2 build/DriveSweep.app
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: DriveSweep
+          path: build/DriveSweep.dmg
