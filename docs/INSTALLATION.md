@@ -1,6 +1,6 @@
 # Installation
 
-DriveSweep is free and open source. The public `v0.4.2` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
+DriveSweep is free and open source. The public `v0.4.3` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
 
 Only trust a release downloaded from [the official DriveSweep GitHub releases page](https://github.com/naicud/drivesweep/releases), or build the public source yourself.
 
@@ -19,7 +19,7 @@ To update later, use:
 
 ```sh
 brew upgrade --cask naicud/drivesweep/drivesweep
-    xattr -d com.apple.quarantine /Applications/DriveSweep.app
+xattr -d com.apple.quarantine /Applications/DriveSweep.app
 ```
 
 To remove it:
@@ -31,13 +31,13 @@ brew uninstall --cask drivesweep
 ## DMG
 
 1. Download `DriveSweep.dmg` from the official [releases page](https://github.com/naicud/drivesweep/releases).
-2. Verify the download before opening it. For `v0.4.2`:
+2. Verify the download before opening it. For `v0.4.3`:
 
    ```sh
    shasum -a 256 ~/Downloads/DriveSweep.dmg
    ```
 
-   The expected digest is `9eb50a4eb7beb7f627fc0e89223c1bac60f5d7def199140b23e9ec1304311a90`.
+   The expected digest is `c7dfdc110e5198d9a8f4cba9bdadf612ef0bca951d8a5be9fed8867d302527a0`.
 3. Open the DMG and drag `DriveSweep.app` to `/Applications`.
 4. Use either one of these local launch choices:
 
@@ -46,7 +46,7 @@ brew uninstall --cask drivesweep
 
      ```sh
 xattr -d com.apple.quarantine /Applications/DriveSweep.app
-     open -a DriveSweep
+open -a DriveSweep
      ```
 
 Do not use either approach for software from an unknown source. Removing quarantine is local and reversible in practice by deleting the app and downloading it again; it does not disable Gatekeeper system-wide.
@@ -72,5 +72,7 @@ xcode-select --install
 ## First use
 
 When DriveSweep opens, its dashboard appears immediately and a broom icon stays in the menu bar. Automatic cleanup is off by default. Even after enabling it in Preferences, DriveSweep cleans only a stable mount whose VolumeUUID you explicitly approved with **Consenti auto** in that drive's dashboard card; it waits briefly and rechecks the identity before cleaning once. `.DS_Store` and AppleDouble (`._*`) cleanup are enabled by default; every other metadata category is opt-in. Use **Analizza** before cleanup and **Clean and eject** only after file copying finishes, for a final cleanup pass.
+
+If a drive is removed or replaced while an action is queued, DriveSweep compares the original VolumeUUID before it proceeds with each cleanup category and before ejecting. It stops rather than allowing a stale dashboard or menu action to target a replacement volume.
 
 Use a disposable test USB drive first. DriveSweep deliberately ignores internal disks, disk images, network shares, read-only media, and names you exclude in Preferences.

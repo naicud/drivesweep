@@ -2,7 +2,7 @@
 
 ## Current release status
 
-DriveSweep `v0.4.2` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
+DriveSweep `v0.4.3` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
 
 Apple notarization is a paid distribution service because it requires membership in the Apple Developer Program and a Developer ID certificate. There is no free setting that makes macOS show a third-party downloadable app as Apple-verified for every user.
 
@@ -16,10 +16,10 @@ These choices change local launch handling only. They do not mean that Apple has
 
 ## Verify a release
 
-The `v0.4.2` DMG SHA-256 is:
+The `v0.4.3` DMG SHA-256 is:
 
 ```text
-9eb50a4eb7beb7f627fc0e89223c1bac60f5d7def199140b23e9ec1304311a90
+c7dfdc110e5198d9a8f4cba9bdadf612ef0bca951d8a5be9fed8867d302527a0
 ```
 
 Calculate it after downloading:
@@ -35,6 +35,12 @@ Compare the entire output with the value above and download only from the offici
 DriveSweep runs locally. It has no telemetry, account system, subscription, or networking code. It asks macOS's `diskutil` which mounted volumes are physical and external, then performs configured file-removal operations only inside eligible external writable volumes.
 
 It does not touch the startup disk, disk images, network shares, read-only volumes, or a drive explicitly excluded in Preferences. Automatic cleanup is off by default and is a two-part consent: the global automatic setting must be enabled and the exact stable VolumeUUID must have an explicit automatic-cleanup rule. It waits briefly, rechecks the mount identity and that UUID rule, and then cleans an approved mount once. DriveSweep does not descend into a distinct nested filesystem mount. For a final pass, choose **Clean and eject** after copying is complete.
+
+## Target identity and filesystem boundaries
+
+An action keeps the selected mount URL together with its VolumeUUID. Before each destructive cleanup category, DriveSweep compares that UUID with the mounted target again. If the target changed, later categories are not run and the operation reports the identity failure. The same check occurs immediately before **Clean and eject** asks macOS to eject a device.
+
+Traversal uses physical filesystem entries, does not follow symlinks, and does not cross into a different device. Before removing a matching item at a drive root, the app checks its final `lstat` type, rejects symlinks and special files, and requires it to belong to the source filesystem. This is defense in depth, not a substitute for backups: metadata cleanup is still deletion and cannot be undone by DriveSweep.
 
 ## Data effects
 
