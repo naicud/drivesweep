@@ -39,7 +39,7 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         DSAutomaticCleaning: @NO,
-        DSAppleDouble: @NO,
+        DSAppleDouble: @YES,
         DSAppleDoubleExtensions: @"",
         DSDSStore: @YES,
         DSTrashes: @NO,

@@ -2,7 +2,7 @@
 
 ## Current release status
 
-DriveSweep `v0.2.0` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
+DriveSweep `v0.2.1` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
 
 Apple notarization is a paid distribution service because it requires membership in the Apple Developer Program and a Developer ID certificate. There is no free setting that makes macOS show a third-party downloadable app as Apple-verified for every user.
 
@@ -16,10 +16,10 @@ These choices change local launch handling only. They do not mean that Apple has
 
 ## Verify a release
 
-The `v0.2.0` DMG SHA-256 is:
+The `v0.2.1` DMG SHA-256 is:
 
 ```text
-28f6bc913c8290b3ba2ae19333ed560082bb00e246cdbeac83bdb920fa856065
+22d7d5870108d6bb296d1e9738fd11465bde8f710b731969d2bbb0a584cc3164
 ```
 
 Calculate it after downloading:
@@ -38,7 +38,7 @@ It does not touch the startup disk, disk images, network shares, read-only volum
 
 ## Data effects
 
-Removing `._*` files can discard macOS-only metadata such as custom icons and legacy resource forks. Add extensions to the AppleDouble whitelist when that metadata must be retained. DriveSweep enables only `.DS_Store` cleanup by default; AppleDouble, `.Trashes`, `.Spotlight-V100`, `.fseventsd`, `.apdisk`, `.VolumeIcon.icns`, `Desktop.ini`, `Thumbs.db`, `.TemporaryItems`, and `.AppleDouble` directories are opt-in. Test first on a disposable USB drive and exclude any volume where that metadata matters.
+Removing `._*` files can discard macOS-only metadata such as custom icons and legacy resource forks. Add extensions to the AppleDouble whitelist when that metadata must be retained. DriveSweep enables AppleDouble and `.DS_Store` cleanup by default; `.Trashes`, `.Spotlight-V100`, `.fseventsd`, `.apdisk`, `.VolumeIcon.icns`, `Desktop.ini`, `Thumbs.db`, `.TemporaryItems`, and `.AppleDouble` directories are opt-in. Test first on a disposable USB drive and exclude any volume where that metadata matters.
 
 ## For maintainers
 
