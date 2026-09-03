@@ -5,12 +5,27 @@
 @interface TestDriveSweepController : DriveSweepController
 @property(nonatomic) NSUInteger presentedAlertCount;
 @property(nonatomic) NSUInteger dashboardPresentationCount;
+@property(nonatomic, copy) NSString *testMountIdentity;
+@property(nonatomic) NSUInteger mountIdentityChecks;
+@property(nonatomic) NSUInteger changeIdentityAfterChecks;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *testDiskInfo;
 @end
 
 @implementation TestDriveSweepController
 
 - (BOOL)isEligibleExternalVolume:(NSURL *)url error:(NSError **)error {
+    if (self.testDiskInfo) return [super isEligibleExternalVolume:url error:error];
     return YES;
+}
+
+- (NSDictionary<NSString *, id> *)diskInfoForVolume:(NSURL *)url error:(NSError **)error {
+    if (self.testDiskInfo) return self.testDiskInfo;
+    return [super diskInfoForVolume:url error:error];
+}
+
+- (NSString *)mountIdentityForVolume:(NSURL *)url {
+    self.mountIdentityChecks++;
+    return self.mountIdentityChecks > self.changeIdentityAfterChecks ? @"replacement-volume-uuid" : self.testMountIdentity;
 }
 
 - (void)presentAlertModally:(NSAlert *)alert {
@@ -25,6 +40,7 @@
 
 @interface DriveSweepController (DashboardLifecycleRegression)
 - (void)showDashboard:(id)sender;
+- (void)showPreferences:(id)sender;
 @end
 
 static BOOL DashboardReopenAfterCloseRegression(void) {
@@ -47,7 +63,22 @@ static BOOL DashboardReopenAfterCloseRegression(void) {
         }
     }
     [controller.dashboardWindow orderOut:nil];
-    return created && retainedForReopen && lifecycleStable;
+    [controller showPreferences:nil];
+    BOOL preferencesRetained = controller.preferencesWindow != nil && !controller.preferencesWindow.releasedWhenClosed;
+    BOOL preferencesLifecycleStable = YES;
+    for (NSUInteger cycle = 0; cycle < 5; cycle++) {
+        NSWindow *preferences = controller.preferencesWindow;
+        [preferences performClose:nil];
+        BOOL hidden = !preferences.isVisible;
+        preferences = nil;
+        [controller showPreferences:nil];
+        if (!hidden || !controller.preferencesWindow.isVisible) {
+            preferencesLifecycleStable = NO;
+            break;
+        }
+    }
+    [controller.preferencesWindow orderOut:nil];
+    return created && retainedForReopen && lifecycleStable && preferencesRetained && preferencesLifecycleStable;
 }
 
 static BOOL CreateDirectory(NSFileManager *manager, NSString *path) {
@@ -96,6 +127,16 @@ int main(void) {
         if (![registeredDefaults[DSAppleDouble] boolValue] ||
             [registeredDefaults[DSAutomaticCleaning] boolValue]) return 1;
         TestDriveSweepController *controller = [[TestDriveSweepController alloc] init];
+        controller.testDiskInfo = @{
+            @"Internal": @NO,
+            @"RemovableMediaOrExternalDevice": @YES,
+            @"SystemImage": @NO,
+            @"WritableVolume": @YES,
+            @"DeviceIdentifier": @"disk-image-fixture",
+            @"BusProtocol": @"Disk Image"
+        };
+        BOOL rejectsDiskImages = ![controller isEligibleExternalVolume:[NSURL fileURLWithPath:root] error:nil];
+        controller.testDiskInfo = nil;
         BOOL dockLifecycle = ![controller applicationShouldTerminateAfterLastWindowClosed:NSApp] &&
             [controller applicationShouldHandleReopen:NSApp hasVisibleWindows:NO] &&
             controller.dashboardPresentationCount == 1;
@@ -205,6 +246,19 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"photo.jpg"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.eps"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
+
+        [@"appledouble" writeToFile:[root stringByAppendingPathComponent:@"._identity.jpg"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [@"metadata" writeToFile:[root stringByAppendingPathComponent:@".DS_Store"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        controller.testMountIdentity = @"fixture-volume-uuid";
+        controller.mountIdentityChecks = 0;
+        controller.changeIdentityAfterChecks = 2;
+        NSDictionary<NSString *, id> *identityChanged = [controller cleanVolumeOnWorker:volume expectedMountIdentity:controller.testMountIdentity options:options];
+        BOOL identityChangeStopsCleanup = ![identityChanged[@"success"] boolValue] &&
+            [[identityChanged[@"errors"] componentsJoinedByString:@"; "] containsString:@"identità è cambiata durante la pulizia"] &&
+            ![manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._identity.jpg"]] &&
+            [manager fileExistsAtPath:[root stringByAppendingPathComponent:@".DS_Store"]];
+        controller.changeIdentityAfterChecks = NSUIntegerMax;
+
         [defaults setBool:YES forKey:DSAppleDouble];
         [defaults setBool:YES forKey:DSDSStore];
         [defaults setObject:@"eps" forKey:DSAppleDoubleExtensions];
@@ -227,6 +281,6 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         [manager removeItemAtPath:root error:nil];
-        return dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
+        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
     }
 }

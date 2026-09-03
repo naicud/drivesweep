@@ -1,6 +1,6 @@
 cask "drivesweep" do
-  version "0.4.1"
-  sha256 "0a8b44494da518c1331bd8eb38aff9b1a5e9afbf2cf5280dc453a8ace532bf6f"
+  version "0.4.2"
+  sha256 "9eb50a4eb7beb7f627fc0e89223c1bac60f5d7def199140b23e9ec1304311a90"
 
   url "https://github.com/naicud/drivesweep/releases/download/v#{version}/DriveSweep.dmg"
   name "DriveSweep"
