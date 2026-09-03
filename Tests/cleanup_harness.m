@@ -9,6 +9,8 @@
 @property(nonatomic) NSUInteger mountIdentityChecks;
 @property(nonatomic) NSUInteger changeIdentityAfterChecks;
 @property(nonatomic, copy) NSDictionary<NSString *, id> *testDiskInfo;
+@property(nonatomic, copy) NSURL *capturedPreviewVolume;
+@property(nonatomic, copy) NSString *capturedPreviewIdentity;
 @end
 
 @implementation TestDriveSweepController
@@ -36,11 +38,18 @@
     self.dashboardPresentationCount += 1;
 }
 
+- (void)previewVolume:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity {
+    self.capturedPreviewVolume = volume;
+    self.capturedPreviewIdentity = expectedMountIdentity;
+}
+
 @end
 
 @interface DriveSweepController (DashboardLifecycleRegression)
 - (void)showDashboard:(id)sender;
 - (void)showPreferences:(id)sender;
+- (NSPopUpButton *)dashboardActionsButtonForVolume:(NSURL *)volume identity:(NSString *)identity enabled:(BOOL)enabled;
+- (void)previewFromMenu:(NSMenuItem *)sender;
 @end
 
 static BOOL DashboardReopenAfterCloseRegression(void) {
@@ -83,6 +92,27 @@ static BOOL DashboardReopenAfterCloseRegression(void) {
 
 static BOOL CreateDirectory(NSFileManager *manager, NSString *path) {
     return [manager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
+}
+
+static BOOL RunChmod(NSArray<NSString *> *arguments) {
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/bin/chmod"];
+    task.arguments = arguments;
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) return NO;
+    [task waitUntilExit];
+    return task.terminationStatus == 0;
+}
+
+static BOOL DenyFixtureDirectoryTraversal(NSString *path) {
+    NSString *entry = [NSString stringWithFormat:@"user:%@ deny list,search,readattr,readextattr,readsecurity", NSUserName()];
+    return RunChmod(@[@"+a", entry, path]);
+}
+
+static BOOL RestoreFixtureDirectoryTraversal(NSString *path) {
+    return RunChmod(@[@"-N", path]) && chmod(path.fileSystemRepresentation, 0700) == 0;
 }
 
 int main(void) {
@@ -177,6 +207,12 @@ int main(void) {
 
         NSURL *volume = [NSURL fileURLWithPath:root];
         NSDictionary<NSString *, id> *options = [controller cleanupOptionsSnapshot];
+        NSPopUpButton *actionsButton = [controller dashboardActionsButtonForVolume:volume identity:@"fixture-volume-uuid" enabled:YES];
+        NSMenuItem *analyzeItem = actionsButton.menu.itemArray[1];
+        [controller previewFromMenu:analyzeItem];
+        BOOL dashboardAnalyzeCapturesTarget =
+            [controller.capturedPreviewVolume.path isEqualToString:volume.path] &&
+            [controller.capturedPreviewIdentity isEqualToString:@"fixture-volume-uuid"];
         [controller showPreviewReport:@{
             @"success": @YES,
             @"counts": @{},
@@ -212,6 +248,33 @@ int main(void) {
             [manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".DS_Store"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._photo.jpg"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._keep.eps"]];
+
+        NSArray<NSString *> *protectedRootDirectories = @[@".Trashes", @".Spotlight-V100", @".fseventsd", @".TemporaryItems"];
+        BOOL protectedRootDirectoriesAreExcludedFromPreviewTraversal =
+            DSIsPreviewTraversalExcludedRootDirectory(@".Trashes") &&
+            DSIsPreviewTraversalExcludedRootDirectory(@".Spotlight-V100") &&
+            DSIsPreviewTraversalExcludedRootDirectory(@".fseventsd") &&
+            DSIsPreviewTraversalExcludedRootDirectory(@".TemporaryItems") &&
+            !DSIsPreviewTraversalExcludedRootDirectory(@"ordinary-folder");
+        for (NSString *name in protectedRootDirectories) {
+            NSString *directory = [root stringByAppendingPathComponent:name];
+            if (![@"metadata" writeToFile:[directory stringByAppendingPathComponent:@"state"] atomically:YES encoding:NSUTF8StringEncoding error:nil]) return 1;
+            if (!DenyFixtureDirectoryTraversal(directory)) return 1;
+        }
+        NSMutableDictionary<NSString *, id> *optionsWithDisabledRootMetadata = [options mutableCopy];
+        for (NSString *key in @[DSTrashes, DSSpotlight, DSFileEvents, DSTemporaryItems]) optionsWithDisabledRootMetadata[key] = @NO;
+        NSDictionary<NSString *, id> *unreadableRootMetadataPreview = [controller previewVolumeOnWorker:volume expectedMountIdentity:nil options:optionsWithDisabledRootMetadata];
+        for (NSString *name in protectedRootDirectories) {
+            NSString *directory = [root stringByAppendingPathComponent:name];
+            if (!RestoreFixtureDirectoryTraversal(directory)) return 1;
+        }
+        BOOL unreadableRootMetadataDoesNotFailPreview =
+            [unreadableRootMetadataPreview[@"success"] boolValue] &&
+            [unreadableRootMetadataPreview[@"counts"][DSTrashes] unsignedIntegerValue] == 0 &&
+            [unreadableRootMetadataPreview[@"counts"][DSSpotlight] unsignedIntegerValue] == 0 &&
+            [unreadableRootMetadataPreview[@"counts"][DSFileEvents] unsignedIntegerValue] == 0 &&
+            [unreadableRootMetadataPreview[@"counts"][DSTemporaryItems] unsignedIntegerValue] == 0 &&
+            [unreadableRootMetadataPreview[@"errors"] count] == 0;
 
         DSOperationState *cancelledScanOperation = [[DSOperationState alloc] init];
         cancelledScanOperation.kind = DSOperationKindPreview;
@@ -281,6 +344,6 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         [manager removeItemAtPath:root error:nil];
-        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
+        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && dashboardAnalyzeCapturesTarget && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
     }
 }

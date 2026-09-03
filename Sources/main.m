@@ -38,6 +38,10 @@ static NSArray<NSString *> *DSCleanupPreferenceKeys(void) {
     ];
 }
 
+static BOOL DSIsPreviewTraversalExcludedRootDirectory(NSString *directoryName) {
+    return [@[@".Trashes", @".Spotlight-V100", @".fseventsd", @".TemporaryItems"] containsObject:directoryName];
+}
+
 static NSString *DSCleanupReportLabel(NSString *key) {
     static NSDictionary<NSString *, NSString *> *labels;
     static dispatch_once_t onceToken;
@@ -861,7 +865,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
             NSNumber *isPackage = nil;
             [entryURL getResourceValue:&isPackage forKey:NSURLIsPackageKey error:nil];
             NSString *directoryName = [NSString stringWithUTF8String:entry->fts_name];
-            if (isPackage.boolValue || [@[@".Trashes", @".Spotlight-V100", @".fseventsd"] containsObject:directoryName]) {
+            if (isPackage.boolValue || DSIsPreviewTraversalExcludedRootDirectory(directoryName)) {
                 fts_set(tree, entry, FTS_SKIP);
             }
             if ([self cleanupOption:DSAppleDoubleDirectories isEnabledInOptions:options] && [directoryName isEqualToString:@".AppleDouble"]) {
