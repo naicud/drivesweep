@@ -111,7 +111,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @implementation DSOperationState
 @end
 
-@interface DriveSweepController : NSObject <NSApplicationDelegate>
+@interface DriveSweepController : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (strong) NSStatusItem *statusItem;
 @property (strong) NSWindow *dashboardWindow;
 @property (strong) NSTextField *dashboardStatusLabel;
@@ -206,6 +206,20 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return NO;
+}
+
+- (BOOL)windowShouldClose:(NSWindow *)window {
+    if (window == self.dashboardWindow) {
+        /*
+         * The dashboard is the app's primary window.  Keeping it alive and
+         * ordering it out gives Dock re-open a stable window to bring back;
+         * closing a manually owned NSWindow on macOS 26 can leave AppKit's
+         * later reopen event with a stale window reference.
+         */
+        [window orderOut:nil];
+        return NO;
+    }
+    return YES;
 }
 
 - (NSArray<NSURL *> *)externalVolumes {
@@ -1247,8 +1261,13 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         self.dashboardWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 580)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered defer:NO];
+        // Keep the retained dashboard instance valid after the user closes it.
+        // applicationShouldHandleReopen: reuses this window instead of allocating
+        // a new controller, so AppKit must not release it on close.
+        self.dashboardWindow.releasedWhenClosed = NO;
         self.dashboardWindow.title = @"DriveSweep";
         self.dashboardWindow.minSize = NSMakeSize(600, 480);
+        self.dashboardWindow.delegate = self;
         [self.dashboardWindow center];
 
         NSView *content = self.dashboardWindow.contentView;

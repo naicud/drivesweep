@@ -23,6 +23,33 @@
 
 @end
 
+@interface DriveSweepController (DashboardLifecycleRegression)
+- (void)showDashboard:(id)sender;
+@end
+
+static BOOL DashboardReopenAfterCloseRegression(void) {
+    NSApplication *application = [NSApplication sharedApplication];
+    [application setActivationPolicy:NSApplicationActivationPolicyRegular];
+    DriveSweepController *controller = [[DriveSweepController alloc] init];
+    [controller showDashboard:nil];
+    BOOL created = controller.dashboardWindow != nil;
+    BOOL retainedForReopen = !controller.dashboardWindow.releasedWhenClosed;
+    BOOL lifecycleStable = YES;
+    for (NSUInteger cycle = 0; cycle < 20; cycle++) {
+        NSWindow *window = controller.dashboardWindow;
+        [window performClose:nil];
+        BOOL hidden = !window.isVisible;
+        window = nil;
+        BOOL handled = [controller applicationShouldHandleReopen:application hasVisibleWindows:NO];
+        if (!hidden || !handled || !controller.dashboardWindow.isVisible) {
+            lifecycleStable = NO;
+            break;
+        }
+    }
+    [controller.dashboardWindow orderOut:nil];
+    return created && retainedForReopen && lifecycleStable;
+}
+
 static BOOL CreateDirectory(NSFileManager *manager, NSString *path) {
     return [manager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
 }
@@ -72,6 +99,7 @@ int main(void) {
         BOOL dockLifecycle = ![controller applicationShouldTerminateAfterLastWindowClosed:NSApp] &&
             [controller applicationShouldHandleReopen:NSApp hasVisibleWindows:NO] &&
             controller.dashboardPresentationCount == 1;
+        BOOL dashboardReopenAfterClose = DashboardReopenAfterCloseRegression();
         [controller applyCleanupProfile:DSProfileMacMetadata];
         NSDictionary<NSString *, id> *macMetadataOptions = [controller cleanupOptionsSnapshot];
         [controller applyCleanupProfile:DSProfileCrossPlatform];
@@ -199,6 +227,6 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         [manager removeItemAtPath:root error:nil];
-        return dockLifecycle && profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
+        return dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
     }
 }
