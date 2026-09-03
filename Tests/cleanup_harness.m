@@ -48,6 +48,27 @@ int main(void) {
         NSDictionary<NSString *, id> *registeredDefaults = DSDefaultPreferences();
         if (![registeredDefaults[DSAppleDouble] boolValue] ||
             [registeredDefaults[DSAutomaticCleaning] boolValue]) return 1;
+        TestDriveSweepController *controller = [[TestDriveSweepController alloc] init];
+        [controller applyCleanupProfile:DSProfileMacMetadata];
+        NSDictionary<NSString *, id> *macMetadataOptions = [controller cleanupOptionsSnapshot];
+        [controller applyCleanupProfile:DSProfileCrossPlatform];
+        NSDictionary<NSString *, id> *crossPlatformOptions = [controller cleanupOptionsSnapshot];
+        BOOL profileSnapshots =
+            ![macMetadataOptions[DSAppleDouble] boolValue] &&
+            [macMetadataOptions[DSDSStore] boolValue] &&
+            ![macMetadataOptions[DSTrashes] boolValue] &&
+            [crossPlatformOptions[DSAppleDouble] boolValue] &&
+            [crossPlatformOptions[DSDSStore] boolValue] &&
+            ![crossPlatformOptions[DSTrashes] boolValue];
+
+        NSString *testIdentity = @"drivesweep-harness-volume-uuid";
+        [controller setVolumeRuleForIdentity:testIdentity name:@"Fixture" excluded:NO allowAutomatic:YES];
+        BOOL uuidRules = [controller allowsAutomaticCleaningForIdentity:testIdentity] && ![controller isVolumeExcludedForIdentity:testIdentity];
+        [controller setVolumeRuleForIdentity:testIdentity name:@"Fixture" excluded:YES allowAutomatic:YES];
+        uuidRules = uuidRules && ![controller allowsAutomaticCleaningForIdentity:testIdentity] && [controller isVolumeExcludedForIdentity:testIdentity];
+        [controller setVolumeRuleForIdentity:testIdentity name:@"Fixture" excluded:NO allowAutomatic:NO];
+        uuidRules = uuidRules && [controller volumeRuleForIdentity:testIdentity].count == 0;
+
         [defaults setBool:YES forKey:DSAppleDouble];
         [defaults setBool:YES forKey:DSDSStore];
         [defaults setBool:YES forKey:DSTrashes];
@@ -61,9 +82,31 @@ int main(void) {
         [defaults setBool:YES forKey:DSAppleDoubleDirectories];
         [defaults setObject:@"eps" forKey:DSAppleDoubleExtensions];
 
-        TestDriveSweepController *controller = [[TestDriveSweepController alloc] init];
-        NSDictionary<NSString *, id> *result = [controller cleanVolumeOnWorker:[NSURL fileURLWithPath:root]];
-        BOOL cleaned = [result[@"success"] boolValue] &&
+        NSURL *volume = [NSURL fileURLWithPath:root];
+        NSDictionary<NSString *, id> *options = [controller cleanupOptionsSnapshot];
+        NSDictionary<NSString *, id> *preview = [controller previewVolumeOnWorker:volume expectedMountIdentity:nil options:options];
+        NSDictionary<NSString *, NSNumber *> *counts = preview[@"counts"];
+        BOOL previewed = [preview[@"success"] boolValue] &&
+            [counts[DSAppleDouble] unsignedIntegerValue] == 1 &&
+            [preview[@"protectedAppleDouble"] unsignedIntegerValue] == 1 &&
+            [counts[DSDSStore] unsignedIntegerValue] == 1 &&
+            [counts[DSTrashes] unsignedIntegerValue] == 1 &&
+            [counts[DSSpotlight] unsignedIntegerValue] == 1 &&
+            [counts[DSFileEvents] unsignedIntegerValue] == 1 &&
+            [counts[DSApdisk] unsignedIntegerValue] == 1 &&
+            [counts[DSVolumeIcon] unsignedIntegerValue] == 1 &&
+            [counts[DSDesktopIni] unsignedIntegerValue] == 1 &&
+            [counts[DSThumbsDb] unsignedIntegerValue] == 1 &&
+            [counts[DSTemporaryItems] unsignedIntegerValue] == 1 &&
+            [counts[DSAppleDoubleDirectories] unsignedIntegerValue] == 1 &&
+            [manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".DS_Store"]] &&
+            [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._photo.jpg"]] &&
+            [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._keep.eps"]];
+
+        for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:NO forKey:key];
+        [defaults setObject:@"" forKey:DSAppleDoubleExtensions];
+        NSDictionary<NSString *, id> *result = [controller cleanVolumeOnWorker:volume expectedMountIdentity:nil options:options];
+        BOOL cleanedWithSnapshot = [result[@"success"] boolValue] &&
             ![manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".DS_Store"]] &&
             ![manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._photo.jpg"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._keep.eps"]] &&
@@ -82,6 +125,6 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.eps"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         [manager removeItemAtPath:root error:nil];
-        return cleaned ? 0 : 1;
+        return profileSnapshots && uuidRules && previewed && cleanedWithSnapshot ? 0 : 1;
     }
 }

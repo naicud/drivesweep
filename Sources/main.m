@@ -20,6 +20,43 @@ static NSString *const DSThumbsDb = @"thumbsDb";
 static NSString *const DSTemporaryItems = @"temporaryItems";
 static NSString *const DSAppleDoubleDirectories = @"appleDoubleDirectories";
 static NSString *const DSExcludedVolumes = @"excludedVolumes";
+static NSString *const DSVolumeRules = @"volumeRules";
+static NSString *const DSCleanupProfile = @"cleanupProfile";
+static NSString *const DSProfileCrossPlatform = @"crossPlatform";
+static NSString *const DSProfileMacMetadata = @"macMetadata";
+static NSString *const DSProfileCustom = @"custom";
+static NSString *const DSVolumeRuleExcluded = @"excluded";
+static NSString *const DSVolumeRuleAutomatic = @"allowAutomatic";
+static NSString *const DSVolumeRuleName = @"name";
+
+static NSArray<NSString *> *DSCleanupPreferenceKeys(void) {
+    return @[
+        DSAppleDouble, DSDSStore, DSTrashes, DSSpotlight, DSFileEvents,
+        DSApdisk, DSVolumeIcon, DSDesktopIni, DSThumbsDb, DSTemporaryItems,
+        DSAppleDoubleDirectories
+    ];
+}
+
+static NSString *DSCleanupReportLabel(NSString *key) {
+    static NSDictionary<NSString *, NSString *> *labels;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        labels = @{
+            DSAppleDouble: @"File ._* (AppleDouble)",
+            DSDSStore: @"File .DS_Store",
+            DSTrashes: @"Cartella .Trashes",
+            DSSpotlight: @"Indice Spotlight",
+            DSFileEvents: @"Registro .fseventsd",
+            DSApdisk: @"File .apdisk",
+            DSVolumeIcon: @"File .VolumeIcon.icns",
+            DSDesktopIni: @"File Desktop.ini",
+            DSThumbsDb: @"File Thumbs.db",
+            DSTemporaryItems: @"Cartella .TemporaryItems",
+            DSAppleDoubleDirectories: @"Cartelle .AppleDouble"
+        };
+    });
+    return labels[key] ?: key;
+}
 
 static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     return @{
@@ -36,9 +73,18 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
         DSThumbsDb: @NO,
         DSTemporaryItems: @NO,
         DSAppleDoubleDirectories: @NO,
-        DSExcludedVolumes: @""
+        DSExcludedVolumes: @"",
+        DSVolumeRules: @{},
+        DSCleanupProfile: DSProfileCrossPlatform
     };
 }
+
+@interface DSFlippedView : NSView
+@end
+
+@implementation DSFlippedView
+- (BOOL)isFlipped { return YES; }
+@end
 
 @interface DriveSweepController : NSObject <NSApplicationDelegate>
 @property (strong) NSStatusItem *statusItem;
@@ -51,6 +97,19 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
 @property (strong) NSMutableSet<NSString *> *scheduledCleanupPaths;
 @property (strong) NSMutableSet<NSString *> *handledMountIdentities;
 @property dispatch_queue_t cleanupQueue;
+@property (strong) NSScrollView *dashboardScrollView;
+@property (strong) NSView *dashboardDocumentView;
+@property (strong) NSButton *analyzeAllButton;
+@property (strong) NSPopUpButton *profilePopup;
+@property (strong) NSMutableDictionary<NSString *, NSURL *> *dashboardVolumeURLs;
+@property (strong) NSMutableDictionary<NSString *, NSButton *> *preferenceCheckboxes;
+@property (strong) NSMutableDictionary<NSString *, NSTextField *> *preferenceTextFields;
+- (NSDictionary<NSString *, id> *)cleanupOptionsSnapshot;
+- (NSDictionary<NSString *, id> *)previewVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options;
+- (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options;
+- (BOOL)isVolumeExcludedForIdentity:(NSString *)identity;
+- (BOOL)allowsAutomaticCleaningForIdentity:(NSString *)identity;
+- (void)setVolumeRuleForIdentity:(NSString *)identity name:(NSString *)name excluded:(BOOL)excluded allowAutomatic:(BOOL)allowAutomatic;
 @end
 
 @implementation DriveSweepController
@@ -62,6 +121,9 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     self.eligibleVolumeIdentities = @{};
     self.scheduledCleanupPaths = [NSMutableSet set];
     self.handledMountIdentities = [NSMutableSet set];
+    self.dashboardVolumeURLs = [NSMutableDictionary dictionary];
+    self.preferenceCheckboxes = [NSMutableDictionary dictionary];
+    self.preferenceTextFields = [NSMutableDictionary dictionary];
     self.cleanupQueue = dispatch_queue_create("com.github.naicud.drivesweep.cleanup", DISPATCH_QUEUE_SERIAL);
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     NSImage *menuIcon = [NSImage imageWithSystemSymbolName:@"broom.fill" accessibilityDescription:@"DriveSweep"];
@@ -160,6 +222,48 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     return diskUUID.length ? diskUUID : nil;
 }
 
+- (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)volumeRules {
+    NSDictionary *rules = [[NSUserDefaults standardUserDefaults] dictionaryForKey:DSVolumeRules];
+    return [rules isKindOfClass:NSDictionary.class] ? rules : @{};
+}
+
+- (NSDictionary<NSString *, id> *)volumeRuleForIdentity:(NSString *)identity {
+    if (!identity.length) return @{};
+    NSDictionary *rule = [self volumeRules][identity];
+    return [rule isKindOfClass:NSDictionary.class] ? rule : @{};
+}
+
+- (BOOL)isVolumeExcludedForIdentity:(NSString *)identity {
+    return identity.length && [[self volumeRuleForIdentity:identity][DSVolumeRuleExcluded] boolValue];
+}
+
+- (BOOL)allowsAutomaticCleaningForIdentity:(NSString *)identity {
+    return identity.length && [[self volumeRuleForIdentity:identity][DSVolumeRuleAutomatic] boolValue] && ![self isVolumeExcludedForIdentity:identity];
+}
+
+- (void)setVolumeRuleForIdentity:(NSString *)identity name:(NSString *)name excluded:(BOOL)excluded allowAutomatic:(BOOL)allowAutomatic {
+    if (!identity.length) return;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *rules = [[self volumeRules] mutableCopy];
+    if (excluded || allowAutomatic) {
+        NSMutableDictionary *rule = [[self volumeRuleForIdentity:identity] mutableCopy];
+        rule[DSVolumeRuleName] = name ?: @"";
+        rule[DSVolumeRuleExcluded] = @(excluded);
+        rule[DSVolumeRuleAutomatic] = @(allowAutomatic && !excluded);
+        rules[identity] = rule.copy;
+    } else {
+        [rules removeObjectForKey:identity];
+    }
+    [defaults setObject:rules.copy forKey:DSVolumeRules];
+}
+
+- (NSString *)volumeRuleSummaryForIdentity:(NSString *)identity {
+    if (!identity.length) return @"Identità non verificata — azioni bloccate";
+    if ([self isVolumeExcludedForIdentity:identity]) return @"Escluso per questo disco";
+    if ([self allowsAutomaticCleaningForIdentity:identity]) return @"Auto consentito per questo UUID";
+    return @"Auto disattivato — consenso per disco richiesto";
+}
+
 - (void)volumeMounted:(NSNotification *)notification {
     NSURL *url = notification.userInfo[NSWorkspaceVolumeURLKey];
     if (!url) return;
@@ -193,7 +297,7 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
             if ([[NSUserDefaults standardUserDefaults] boolForKey:DSAutomaticCleaning]) {
                 for (NSURL *url in volumes) {
                     NSString *identity = identities[url.path];
-                    if (!identity || [self.handledMountIdentities containsObject:identity]) continue;
+                    if (![self allowsAutomaticCleaningForIdentity:identity] || [self.handledMountIdentities containsObject:identity]) continue;
                     [self.handledMountIdentities addObject:identity];
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                         if ([[NSUserDefaults standardUserDefaults] boolForKey:DSAutomaticCleaning]) {
@@ -264,15 +368,81 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     return 0;
 }
 
-- (NSSet<NSString *> *)protectedAppleDoubleExtensions {
-    NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:DSAppleDoubleExtensions] ?: @"";
+- (NSSet<NSString *> *)protectedAppleDoubleExtensionsFromValue:(NSString *)value {
     NSMutableSet<NSString *> *extensions = [NSMutableSet set];
     for (NSString *rawExtension in [value componentsSeparatedByString:@","]) {
         NSString *extension = [[rawExtension stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
         if ([extension hasPrefix:@"."]) extension = [extension substringFromIndex:1];
         if (extension.length) [extensions addObject:extension];
     }
-    return extensions;
+    return extensions.copy;
+}
+
+- (NSDictionary<NSString *, id> *)cleanupOptionsSnapshot {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary<NSString *, id> *options = [NSMutableDictionary dictionary];
+    for (NSString *key in DSCleanupPreferenceKeys()) options[key] = @([defaults boolForKey:key]);
+    NSString *extensionValue = [defaults stringForKey:DSAppleDoubleExtensions] ?: @"";
+    options[DSAppleDoubleExtensions] = [self protectedAppleDoubleExtensionsFromValue:extensionValue];
+    return options.copy;
+}
+
+- (BOOL)cleanupOption:(NSString *)key isEnabledInOptions:(NSDictionary<NSString *, id> *)options {
+    return [options[key] boolValue];
+}
+
+- (NSString *)cleanupProfileDisplayName:(NSString *)profile {
+    if ([profile isEqualToString:DSProfileMacMetadata]) return @"Conserva metadati Mac";
+    if ([profile isEqualToString:DSProfileCustom]) return @"Personalizzato";
+    return @"Condivisione multipiattaforma";
+}
+
+- (NSString *)cleanupProfileDescription:(NSString *)profile {
+    if ([profile isEqualToString:DSProfileMacMetadata]) return @"Conserva AppleDouble e altri metadati Mac; rimuove solo .DS_Store.";
+    if ([profile isEqualToString:DSProfileCustom]) return @"Mantiene esattamente i toggle scelti manualmente.";
+    return @"Prepara il disco per Mac/Windows/Linux: rimuove ._* e .DS_Store.";
+}
+
+- (void)selectProfile:(NSString *)profile inPopup:(NSPopUpButton *)popup {
+    for (NSUInteger index = 0; index < popup.itemArray.count; index++) {
+        NSMenuItem *item = popup.itemArray[index];
+        if ([item.representedObject isEqual:profile]) {
+            [popup selectItemAtIndex:index];
+            return;
+        }
+    }
+}
+
+- (void)applyCleanupProfile:(NSString *)profile {
+    if (!profile.length) profile = DSProfileCrossPlatform;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![profile isEqualToString:DSProfileCustom]) {
+        BOOL crossPlatform = [profile isEqualToString:DSProfileCrossPlatform];
+        for (NSString *key in DSCleanupPreferenceKeys()) {
+            BOOL enabled = [key isEqualToString:DSDSStore] || (crossPlatform && [key isEqualToString:DSAppleDouble]);
+            [defaults setBool:enabled forKey:key];
+        }
+    }
+    [defaults setObject:profile forKey:DSCleanupProfile];
+    [self refreshPreferenceControls];
+    [self rebuildMenu];
+}
+
+- (void)resetSafeDefaults:(id)sender {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSDictionary<NSString *, id> *safe = DSDefaultPreferences();
+    [defaults setBool:[safe[DSAutomaticCleaning] boolValue] forKey:DSAutomaticCleaning];
+    for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:[safe[key] boolValue] forKey:key];
+    [defaults setObject:safe[DSAppleDoubleExtensions] forKey:DSAppleDoubleExtensions];
+    [defaults setObject:safe[DSCleanupProfile] forKey:DSCleanupProfile];
+    [self selectProfile:DSProfileCrossPlatform inPopup:self.profilePopup];
+    [self rebuildMenu];
+    [self notify:@"Impostazioni sicure ripristinate. Le regole per singolo disco non sono state modificate."];
+}
+
+- (void)profileSelectionChanged:(NSPopUpButton *)sender {
+    NSString *profile = sender.selectedItem.representedObject;
+    [self applyCleanupProfile:profile ?: DSProfileCustom];
 }
 
 - (NSUInteger)removeAppleDoubleFilesFromVolume:(NSURL *)volume protectedExtensions:(NSSet<NSString *> *)protectedExtensions errors:(NSMutableArray<NSString *> *)errors {
@@ -301,11 +471,121 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     return removed;
 }
 
-- (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume {
-    return [self cleanVolumeOnWorker:volume expectedMountIdentity:nil];
+- (NSUInteger)countNamedFiles:(NSString *)name fromVolume:(NSURL *)volume directoriesOnly:(BOOL)directoriesOnly errors:(NSMutableArray<NSString *> *)errors {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    struct stat rootStatus;
+    if (lstat(volume.fileSystemRepresentation, &rootStatus) != 0) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (%s)", volume.lastPathComponent, strerror(errno)]];
+        return 0;
+    }
+    NSMutableSet<NSString *> *matchedPaths = [NSMutableSet set];
+    NSDirectoryEnumerator *enumerator = [manager enumeratorAtURL:volume
+        includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+        options:NSDirectoryEnumerationSkipsPackageDescendants
+        errorHandler:^BOOL(NSURL *url, NSError *error) {
+            [errors addObject:[NSString stringWithFormat:@"%@ (%@)", url.lastPathComponent, error.localizedDescription]];
+            return YES;
+        }];
+    NSURL *item = nil;
+    while ((item = [enumerator nextObject])) {
+        NSNumber *isDirectory = nil;
+        [item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
+        struct stat itemStatus;
+        if (lstat(item.fileSystemRepresentation, &itemStatus) != 0) {
+            [errors addObject:[NSString stringWithFormat:@"%@ (%s)", item.lastPathComponent, strerror(errno)]];
+            continue;
+        }
+        if (itemStatus.st_dev != rootStatus.st_dev) {
+            if (isDirectory.boolValue) [enumerator skipDescendants];
+            continue;
+        }
+        if (isDirectory.boolValue && [@[@".Trashes", @".Spotlight-V100", @".fseventsd"] containsObject:item.lastPathComponent]) {
+            [enumerator skipDescendants];
+        }
+        if ([item.lastPathComponent isEqualToString:name] && directoriesOnly == isDirectory.boolValue) {
+            [matchedPaths addObject:item.path];
+        }
+    }
+    NSURL *rootItem = [volume URLByAppendingPathComponent:name];
+    BOOL rootIsDirectory = NO;
+    if ([manager fileExistsAtPath:rootItem.path isDirectory:&rootIsDirectory] && directoriesOnly == rootIsDirectory) {
+        [matchedPaths addObject:rootItem.path];
+    }
+    return matchedPaths.count;
 }
 
-- (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity {
+- (NSUInteger)countRootDirectory:(NSString *)name fromVolume:(NSURL *)volume errors:(NSMutableArray<NSString *> *)errors {
+    NSURL *target = [volume URLByAppendingPathComponent:name];
+    BOOL isDirectory = NO;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:target.path isDirectory:&isDirectory] && isDirectory) return 1;
+    return 0;
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)countAppleDoubleFilesFromVolume:(NSURL *)volume protectedExtensions:(NSSet<NSString *> *)protectedExtensions errors:(NSMutableArray<NSString *> *)errors {
+    char *paths[] = { (char *)volume.fileSystemRepresentation, NULL };
+    FTS *tree = fts_open(paths, FTS_NOCHDIR | FTS_PHYSICAL | FTS_XDEV, NULL);
+    if (!tree) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (%s)", volume.lastPathComponent, strerror(errno)]];
+        return @{ @"removable": @0, @"protected": @0 };
+    }
+    NSUInteger removable = 0;
+    NSUInteger protectedCount = 0;
+    FTSENT *entry = nil;
+    while ((entry = fts_read(tree))) {
+        if (entry->fts_info == FTS_DNR || entry->fts_info == FTS_ERR) {
+            [errors addObject:[NSString stringWithFormat:@"%s (%s)", entry->fts_path, strerror(entry->fts_errno)]];
+            continue;
+        }
+        if (entry->fts_info != FTS_F) continue;
+        NSString *name = [NSString stringWithUTF8String:entry->fts_name];
+        if (![name hasPrefix:@"._"]) continue;
+        NSString *extension = [[name substringFromIndex:2].pathExtension lowercaseString];
+        if ([protectedExtensions containsObject:extension]) protectedCount++;
+        else removable++;
+    }
+    fts_close(tree);
+    return @{ @"removable": @(removable), @"protected": @(protectedCount) };
+}
+
+- (NSDictionary<NSString *, id> *)previewVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options {
+    NSError *eligibilityError = nil;
+    if (![self isEligibleExternalVolume:volume error:&eligibilityError]) {
+        NSString *message = eligibilityError.localizedDescription ?: @"Il disco non è più un volume esterno fisico scrivibile.";
+        return @{ @"success": @NO, @"counts": @{}, @"protectedAppleDouble": @0, @"errors": @[message] };
+    }
+    if (expectedMountIdentity && ![[self mountIdentityForVolume:volume] isEqualToString:expectedMountIdentity]) {
+        return @{ @"success": @NO, @"counts": @{}, @"protectedAppleDouble": @0, @"errors": @[@"Il disco è stato smontato o la sua identità è cambiata prima dell'analisi."] };
+    }
+    if ([self isVolumeExcludedForIdentity:expectedMountIdentity]) {
+        return @{ @"success": @NO, @"counts": @{}, @"protectedAppleDouble": @0, @"errors": @[@"Il disco è escluso dalle regole di DriveSweep."] };
+    }
+    NSMutableArray<NSString *> *errors = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+    NSUInteger protectedAppleDouble = 0;
+    for (NSString *key in DSCleanupPreferenceKeys()) counts[key] = @0;
+    if ([self cleanupOption:DSAppleDouble isEnabledInOptions:options]) {
+        NSDictionary<NSString *, NSNumber *> *appleDouble = [self countAppleDoubleFilesFromVolume:volume protectedExtensions:options[DSAppleDoubleExtensions] errors:errors];
+        counts[DSAppleDouble] = appleDouble[@"removable"];
+        protectedAppleDouble = [appleDouble[@"protected"] unsignedIntegerValue];
+    }
+    if ([self cleanupOption:DSDSStore isEnabledInOptions:options]) counts[DSDSStore] = @([self countNamedFiles:@".DS_Store" fromVolume:volume directoriesOnly:NO errors:errors]);
+    if ([self cleanupOption:DSTrashes isEnabledInOptions:options]) counts[DSTrashes] = @([self countRootDirectory:@".Trashes" fromVolume:volume errors:errors]);
+    if ([self cleanupOption:DSSpotlight isEnabledInOptions:options]) counts[DSSpotlight] = @([self countRootDirectory:@".Spotlight-V100" fromVolume:volume errors:errors]);
+    if ([self cleanupOption:DSFileEvents isEnabledInOptions:options]) counts[DSFileEvents] = @([self countRootDirectory:@".fseventsd" fromVolume:volume errors:errors]);
+    if ([self cleanupOption:DSApdisk isEnabledInOptions:options]) counts[DSApdisk] = @([self countNamedFiles:@".apdisk" fromVolume:volume directoriesOnly:NO errors:errors]);
+    if ([self cleanupOption:DSVolumeIcon isEnabledInOptions:options]) counts[DSVolumeIcon] = @([self countNamedFiles:@".VolumeIcon.icns" fromVolume:volume directoriesOnly:NO errors:errors]);
+    if ([self cleanupOption:DSDesktopIni isEnabledInOptions:options]) counts[DSDesktopIni] = @([self countNamedFiles:@"Desktop.ini" fromVolume:volume directoriesOnly:NO errors:errors]);
+    if ([self cleanupOption:DSThumbsDb isEnabledInOptions:options]) counts[DSThumbsDb] = @([self countNamedFiles:@"Thumbs.db" fromVolume:volume directoriesOnly:NO errors:errors]);
+    if ([self cleanupOption:DSTemporaryItems isEnabledInOptions:options]) counts[DSTemporaryItems] = @([self countRootDirectory:@".TemporaryItems" fromVolume:volume errors:errors]);
+    if ([self cleanupOption:DSAppleDoubleDirectories isEnabledInOptions:options]) counts[DSAppleDoubleDirectories] = @([self countNamedFiles:@".AppleDouble" fromVolume:volume directoriesOnly:YES errors:errors]);
+    return @{ @"success": @(errors.count == 0), @"counts": counts.copy, @"protectedAppleDouble": @(protectedAppleDouble), @"errors": errors.copy };
+}
+
+- (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume {
+    return [self cleanVolumeOnWorker:volume expectedMountIdentity:nil options:[self cleanupOptionsSnapshot]];
+}
+
+- (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options {
     NSError *eligibilityError = nil;
     if (![self isEligibleExternalVolume:volume error:&eligibilityError]) {
         NSString *message = eligibilityError.localizedDescription ?: @"Il disco non è più un volume esterno fisico scrivibile.";
@@ -314,21 +594,23 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     if (expectedMountIdentity && ![[self mountIdentityForVolume:volume] isEqualToString:expectedMountIdentity]) {
         return @{ @"success": @NO, @"removed": @0, @"appleDoubleProcessed": @NO, @"errors": @[@"Il disco è stato smontato o la sua identità è cambiata prima della pulizia."] };
     }
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([self isVolumeExcludedForIdentity:expectedMountIdentity]) {
+        return @{ @"success": @NO, @"removed": @0, @"appleDoubleProcessed": @NO, @"errors": @[@"Il disco è escluso dalle regole di DriveSweep."] };
+    }
     NSMutableArray<NSString *> *errors = [NSMutableArray array];
     NSUInteger removed = 0;
-    BOOL appleDoubleProcessed = [defaults boolForKey:DSAppleDouble];
-    if (appleDoubleProcessed) removed += [self removeAppleDoubleFilesFromVolume:volume protectedExtensions:[self protectedAppleDoubleExtensions] errors:errors];
-    if ([defaults boolForKey:DSDSStore]) removed += [self removeNamedFiles:@".DS_Store" fromVolume:volume directoriesOnly:NO errors:errors];
-    if ([defaults boolForKey:DSTrashes]) removed += [self removeRootDirectory:@".Trashes" fromVolume:volume errors:errors];
-    if ([defaults boolForKey:DSSpotlight]) removed += [self removeRootDirectory:@".Spotlight-V100" fromVolume:volume errors:errors];
-    if ([defaults boolForKey:DSFileEvents]) removed += [self removeRootDirectory:@".fseventsd" fromVolume:volume errors:errors];
-    if ([defaults boolForKey:DSApdisk]) removed += [self removeNamedFiles:@".apdisk" fromVolume:volume directoriesOnly:NO errors:errors];
-    if ([defaults boolForKey:DSVolumeIcon]) removed += [self removeNamedFiles:@".VolumeIcon.icns" fromVolume:volume directoriesOnly:NO errors:errors];
-    if ([defaults boolForKey:DSDesktopIni]) removed += [self removeNamedFiles:@"Desktop.ini" fromVolume:volume directoriesOnly:NO errors:errors];
-    if ([defaults boolForKey:DSThumbsDb]) removed += [self removeNamedFiles:@"Thumbs.db" fromVolume:volume directoriesOnly:NO errors:errors];
-    if ([defaults boolForKey:DSTemporaryItems]) removed += [self removeRootDirectory:@".TemporaryItems" fromVolume:volume errors:errors];
-    if ([defaults boolForKey:DSAppleDoubleDirectories]) removed += [self removeNamedFiles:@".AppleDouble" fromVolume:volume directoriesOnly:YES errors:errors];
+    BOOL appleDoubleProcessed = [self cleanupOption:DSAppleDouble isEnabledInOptions:options];
+    if (appleDoubleProcessed) removed += [self removeAppleDoubleFilesFromVolume:volume protectedExtensions:options[DSAppleDoubleExtensions] errors:errors];
+    if ([self cleanupOption:DSDSStore isEnabledInOptions:options]) removed += [self removeNamedFiles:@".DS_Store" fromVolume:volume directoriesOnly:NO errors:errors];
+    if ([self cleanupOption:DSTrashes isEnabledInOptions:options]) removed += [self removeRootDirectory:@".Trashes" fromVolume:volume errors:errors];
+    if ([self cleanupOption:DSSpotlight isEnabledInOptions:options]) removed += [self removeRootDirectory:@".Spotlight-V100" fromVolume:volume errors:errors];
+    if ([self cleanupOption:DSFileEvents isEnabledInOptions:options]) removed += [self removeRootDirectory:@".fseventsd" fromVolume:volume errors:errors];
+    if ([self cleanupOption:DSApdisk isEnabledInOptions:options]) removed += [self removeNamedFiles:@".apdisk" fromVolume:volume directoriesOnly:NO errors:errors];
+    if ([self cleanupOption:DSVolumeIcon isEnabledInOptions:options]) removed += [self removeNamedFiles:@".VolumeIcon.icns" fromVolume:volume directoriesOnly:NO errors:errors];
+    if ([self cleanupOption:DSDesktopIni isEnabledInOptions:options]) removed += [self removeNamedFiles:@"Desktop.ini" fromVolume:volume directoriesOnly:NO errors:errors];
+    if ([self cleanupOption:DSThumbsDb isEnabledInOptions:options]) removed += [self removeNamedFiles:@"Thumbs.db" fromVolume:volume directoriesOnly:NO errors:errors];
+    if ([self cleanupOption:DSTemporaryItems isEnabledInOptions:options]) removed += [self removeRootDirectory:@".TemporaryItems" fromVolume:volume errors:errors];
+    if ([self cleanupOption:DSAppleDoubleDirectories isEnabledInOptions:options]) removed += [self removeNamedFiles:@".AppleDouble" fromVolume:volume directoriesOnly:YES errors:errors];
     return @{ @"success": @(errors.count == 0), @"removed": @(removed), @"appleDoubleProcessed": @(appleDoubleProcessed), @"errors": errors };
 }
 
@@ -339,6 +621,16 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
         if (completion) completion(NO);
         return;
     }
+    if ([self isVolumeExcludedForIdentity:expectedMountIdentity]) {
+        NSString *message = [NSString stringWithFormat:@"Pulizia di %@ annullata: il disco è escluso nelle regole per UUID.", volume.lastPathComponent];
+        [self notify:message];
+        if (completion) completion(NO);
+        return;
+    }
+    if ([source isEqualToString:@"montaggio automatico"] && ![self allowsAutomaticCleaningForIdentity:expectedMountIdentity]) {
+        if (completion) completion(NO);
+        return;
+    }
     if ([self.scheduledCleanupPaths containsObject:volume.path]) {
         if (completion) {
             [self notify:[NSString stringWithFormat:@"La pulizia di %@ è già in corso.", volume.lastPathComponent]];
@@ -346,9 +638,11 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
         }
         return;
     }
+    NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
     [self.scheduledCleanupPaths addObject:volume.path];
+    [self rebuildMenu];
     dispatch_async(self.cleanupQueue, ^{
-        NSDictionary<NSString *, id> *result = [self cleanVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity];
+        NSDictionary<NSString *, id> *result = [self cleanVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity options:options];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.scheduledCleanupPaths removeObject:volume.path];
             BOOL success = [result[@"success"] boolValue];
@@ -362,6 +656,48 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
             if (!success || ![source isEqualToString:@"controllo automatico"]) [self notify:message];
             [self rebuildMenu];
             if (completion) completion(success);
+        });
+    });
+}
+
+- (void)showPreviewReport:(NSDictionary<NSString *, id> *)report options:(NSDictionary<NSString *, id> *)options volume:(NSURL *)volume {
+    NSDictionary<NSString *, NSNumber *> *counts = report[@"counts"];
+    NSMutableString *details = [NSMutableString stringWithString:@"DriveSweep non ha rimosso alcun file.\n\n"];
+    NSUInteger total = 0;
+    for (NSString *key in DSCleanupPreferenceKeys()) {
+        if (![self cleanupOption:key isEnabledInOptions:options]) continue;
+        NSUInteger count = [counts[key] unsignedIntegerValue];
+        total += count;
+        [details appendFormat:@"%@ — %lu\n", DSCleanupReportLabel(key), (unsigned long)count];
+    }
+    if ([self cleanupOption:DSAppleDouble isEnabledInOptions:options]) {
+        NSUInteger protectedCount = [report[@"protectedAppleDouble"] unsignedIntegerValue];
+        [details appendFormat:@"AppleDouble mantenuti dalla whitelist — %lu\n", (unsigned long)protectedCount];
+    }
+    [details appendFormat:@"\nTotale candidati: %lu", (unsigned long)total];
+    NSArray<NSString *> *errors = report[@"errors"];
+    if (errors.count) [details appendFormat:@"\n\nAnalisi parziale:\n%@", [errors componentsJoinedByString:@"\n"]];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = [NSString stringWithFormat:@"Analisi di %@", volume.lastPathComponent];
+    alert.informativeText = details;
+    alert.alertStyle = errors.count ? NSAlertStyleWarning : NSAlertStyleInformational;
+    [alert addButtonWithTitle:@"Chiudi"];
+    NSWindow *sheetWindow = self.dashboardWindow ?: NSApp.keyWindow;
+    if (sheetWindow) [alert beginSheetModalForWindow:sheetWindow completionHandler:nil];
+    else [alert runModal];
+}
+
+- (void)previewVolume:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity {
+    if (!expectedMountIdentity.length) {
+        [self notify:[NSString stringWithFormat:@"Analisi di %@ annullata: non è stato possibile verificare l'identità del disco.", volume.lastPathComponent]];
+        return;
+    }
+    NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
+    dispatch_async(self.cleanupQueue, ^{
+        NSDictionary<NSString *, id> *report = [self previewVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity options:options];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showPreviewReport:report options:options volume:volume];
         });
     });
 }
@@ -381,21 +717,27 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     open.target = self;
     [menu addItem:open];
     [menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *cleanAll = [[NSMenuItem alloc] initWithTitle:@"Pulisci tutti i dischi esterni" action:@selector(cleanAll:) keyEquivalent:@"c"];
-    cleanAll.target = self;
-    [menu addItem:cleanAll];
+    NSMenuItem *analyzeAll = [[NSMenuItem alloc] initWithTitle:@"Analizza tutti i dischi esterni" action:@selector(previewAll:) keyEquivalent:@"c"];
+    analyzeAll.target = self;
+    analyzeAll.enabled = self.eligibleVolumes.count > 0;
+    [menu addItem:analyzeAll];
 
     NSArray<NSURL *> *volumes = self.eligibleVolumes;
     if (volumes.count) {
         [menu addItem:[NSMenuItem separatorItem]];
         for (NSURL *url in volumes) {
-            NSMenuItem *volumeItem = [[NSMenuItem alloc] initWithTitle:url.lastPathComponent action:nil keyEquivalent:@""];
+            NSString *identity = self.eligibleVolumeIdentities[url.path];
+            BOOL excluded = [self isVolumeExcludedForIdentity:identity];
+            NSString *volumeTitle = excluded ? [NSString stringWithFormat:@"%@ (escluso)", url.lastPathComponent] : url.lastPathComponent;
+            NSMenuItem *volumeItem = [[NSMenuItem alloc] initWithTitle:volumeTitle action:nil keyEquivalent:@""];
             NSMenu *submenu = [[NSMenu alloc] initWithTitle:url.lastPathComponent];
+            NSMenuItem *preview = [[NSMenuItem alloc] initWithTitle:@"Analizza…" action:@selector(previewFromMenu:) keyEquivalent:@""];
+            preview.target = self; preview.representedObject = url; preview.enabled = identity.length && !excluded;
             NSMenuItem *clean = [[NSMenuItem alloc] initWithTitle:@"Pulisci ora" action:@selector(cleanFromMenu:) keyEquivalent:@""];
-            clean.target = self; clean.representedObject = url;
+            clean.target = self; clean.representedObject = url; clean.enabled = identity.length && !excluded && ![self.scheduledCleanupPaths containsObject:url.path];
             NSMenuItem *eject = [[NSMenuItem alloc] initWithTitle:@"Pulisci ed espelli" action:@selector(cleanAndEject:) keyEquivalent:@""];
-            eject.target = self; eject.representedObject = url;
-            [submenu addItem:clean]; [submenu addItem:eject];
+            eject.target = self; eject.representedObject = url; eject.enabled = clean.enabled;
+            [submenu addItem:preview]; [submenu addItem:clean]; [submenu addItem:eject];
             volumeItem.submenu = submenu;
             [menu addItem:volumeItem];
         }
@@ -413,15 +755,115 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     [self refreshDashboard];
 }
 
-- (void)cleanAll:(id)sender {
-    for (NSURL *url in self.eligibleVolumes) {
-        [self cleanVolume:url source:@"manuale" expectedMountIdentity:self.eligibleVolumeIdentities[url.path] completion:nil];
+- (void)showAggregatePreviewDetails:(NSString *)details candidateTotal:(NSUInteger)candidateTotal skippedCount:(NSUInteger)skippedCount {
+    NSMutableString *message = [NSMutableString stringWithFormat:@"DriveSweep non ha rimosso alcun file.\n\nTotale candidati: %lu", (unsigned long)candidateTotal];
+    if (skippedCount) [message appendFormat:@"\nDischi saltati: %lu", (unsigned long)skippedCount];
+    if (details.length) [message appendFormat:@"\n\n%@", details];
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Analisi di tutti i dischi esterni";
+    alert.informativeText = message;
+    alert.alertStyle = [details containsString:@"Errore"] ? NSAlertStyleWarning : NSAlertStyleInformational;
+    [alert addButtonWithTitle:@"Chiudi"];
+    NSWindow *sheetWindow = self.dashboardWindow ?: NSApp.keyWindow;
+    if (sheetWindow) [alert beginSheetModalForWindow:sheetWindow completionHandler:nil];
+    else [alert runModal];
+}
+
+- (void)previewAll:(id)sender {
+    NSArray<NSURL *> *volumes = [self.eligibleVolumes copy];
+    NSDictionary<NSString *, NSString *> *identities = [self.eligibleVolumeIdentities copy];
+    NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
+    if (!volumes.count) {
+        [self notify:@"Non ci sono dischi esterni idonei da analizzare."];
+        return;
     }
+    dispatch_async(self.cleanupQueue, ^{
+        NSMutableString *details = [NSMutableString string];
+        NSUInteger candidateTotal = 0;
+        NSUInteger skippedCount = 0;
+        for (NSURL *url in volumes) {
+            NSString *identity = identities[url.path];
+            if (!identity.length || [self isVolumeExcludedForIdentity:identity]) {
+                skippedCount++;
+                [details appendFormat:@"%@ — saltato (regola di esclusione o identità non verificata)\n", url.lastPathComponent];
+                continue;
+            }
+            NSDictionary<NSString *, id> *report = [self previewVolumeOnWorker:url expectedMountIdentity:identity options:options];
+            if (![report[@"success"] boolValue]) {
+                [details appendFormat:@"%@ — Errore: %@\n", url.lastPathComponent, [report[@"errors"] componentsJoinedByString:@"; "]];
+                continue;
+            }
+            NSDictionary<NSString *, NSNumber *> *counts = report[@"counts"];
+            NSUInteger volumeTotal = 0;
+            for (NSString *key in DSCleanupPreferenceKeys()) volumeTotal += [counts[key] unsignedIntegerValue];
+            candidateTotal += volumeTotal;
+            [details appendFormat:@"%@ — %lu candidati, %lu protetti dalla whitelist\n", url.lastPathComponent, (unsigned long)volumeTotal, (unsigned long)[report[@"protectedAppleDouble"] unsignedIntegerValue]];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showAggregatePreviewDetails:details candidateTotal:candidateTotal skippedCount:skippedCount];
+        });
+    });
+}
+
+- (void)cleanAll:(id)sender {
+    // Keep the old selector safe for an already-built menu: the global action is preview-only.
+    [self previewAll:sender];
 }
 
 - (void)cleanFromMenu:(NSMenuItem *)sender {
     NSURL *url = sender.representedObject;
     [self cleanVolume:url source:@"manuale" expectedMountIdentity:self.eligibleVolumeIdentities[url.path] completion:nil];
+}
+
+- (void)previewFromMenu:(NSMenuItem *)sender {
+    NSURL *url = sender.representedObject;
+    [self previewVolume:url expectedMountIdentity:self.eligibleVolumeIdentities[url.path]];
+}
+
+- (NSURL *)volumeForDashboardButton:(NSButton *)sender {
+    return self.dashboardVolumeURLs[sender.identifier];
+}
+
+- (void)previewFromDashboardButton:(NSButton *)sender {
+    NSURL *volume = [self volumeForDashboardButton:sender];
+    [self previewVolume:volume expectedMountIdentity:self.eligibleVolumeIdentities[volume.path]];
+}
+
+- (void)cleanFromDashboardButton:(NSButton *)sender {
+    NSURL *volume = [self volumeForDashboardButton:sender];
+    [self cleanVolume:volume source:@"manuale" expectedMountIdentity:self.eligibleVolumeIdentities[volume.path] completion:nil];
+}
+
+- (void)cleanAndEjectFromDashboardButton:(NSButton *)sender {
+    NSURL *volume = [self volumeForDashboardButton:sender];
+    NSString *identity = self.eligibleVolumeIdentities[volume.path];
+    [self cleanVolume:volume source:@"prima dell'espulsione" expectedMountIdentity:identity completion:^(BOOL success) {
+        if (!success) {
+            [self notify:[NSString stringWithFormat:@"%@ non è stato espulso: la pulizia non è stata completata.", volume.lastPathComponent]];
+            return;
+        }
+        NSError *error = nil;
+        if (![[NSWorkspace sharedWorkspace] unmountAndEjectDeviceAtURL:volume error:&error]) {
+            [self notify:[NSString stringWithFormat:@"Non riesco a espellere %@: %@", volume.lastPathComponent, error.localizedDescription]];
+        }
+    }];
+}
+
+- (void)toggleVolumeRule:(NSButton *)sender {
+    NSString *identity = sender.identifier;
+    NSURL *volume = [self volumeForDashboardButton:sender];
+    if (!identity.length || !volume) return;
+    NSDictionary<NSString *, id> *rule = [self volumeRuleForIdentity:identity];
+    BOOL excluded = [rule[DSVolumeRuleExcluded] boolValue];
+    BOOL allowAutomatic = [rule[DSVolumeRuleAutomatic] boolValue];
+    if (sender.tag == 1) {
+        excluded = !excluded;
+        if (excluded) allowAutomatic = NO;
+    } else if (sender.tag == 2 && !excluded) {
+        allowAutomatic = !allowAutomatic;
+    }
+    [self setVolumeRuleForIdentity:identity name:volume.lastPathComponent excluded:excluded allowAutomatic:allowAutomatic];
+    [self rebuildMenu];
 }
 
 - (void)cleanAndEject:(NSMenuItem *)sender {
@@ -440,57 +882,136 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
 
 - (void)showDashboard:(id)sender {
     if (!self.dashboardWindow) {
-        self.dashboardWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 260)
-            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+        self.dashboardWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 580)
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered defer:NO];
         self.dashboardWindow.title = @"DriveSweep";
-        self.dashboardWindow.minSize = NSMakeSize(500, 260);
+        self.dashboardWindow.minSize = NSMakeSize(600, 480);
+        [self.dashboardWindow center];
 
         NSView *content = self.dashboardWindow.contentView;
         NSTextField *title = [NSTextField labelWithString:@"DriveSweep è attivo"];
-        title.frame = NSMakeRect(28, 190, 440, 32);
+        title.frame = NSMakeRect(24, 526, 560, 32);
         title.font = [NSFont boldSystemFontOfSize:24];
         [content addSubview:title];
 
-        NSTextField *description = [NSTextField wrappingLabelWithString:@"Pulisce solo i dischi fisici esterni. Quando hai finito di copiare i file, usa “Pulisci ed espelli” dal menu della scopa nella barra menu."];
-        description.frame = NSMakeRect(28, 132, 444, 46);
+        NSTextField *description = [NSTextField wrappingLabelWithString:@"Analizza prima di cancellare. DriveSweep lavora solo su dischi fisici esterni scrivibili e non avvia pulizie automatiche senza il consenso del singolo UUID."];
+        description.frame = NSMakeRect(24, 480, 584, 38);
         description.font = [NSFont systemFontOfSize:13];
         [content addSubview:description];
 
         self.dashboardStatusLabel = [NSTextField labelWithString:@""];
-        self.dashboardStatusLabel.frame = NSMakeRect(28, 94, 444, 24);
+        self.dashboardStatusLabel.frame = NSMakeRect(24, 448, 584, 24);
         self.dashboardStatusLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
         [content addSubview:self.dashboardStatusLabel];
 
-        NSButton *clean = [[NSButton alloc] initWithFrame:NSMakeRect(28, 36, 176, 34)];
-        clean.title = @"Pulisci tutti";
-        clean.bezelStyle = NSBezelStyleRounded;
-        clean.target = self;
-        clean.action = @selector(cleanAll:);
-        [content addSubview:clean];
+        self.analyzeAllButton = [NSButton buttonWithTitle:@"Analizza tutti" target:self action:@selector(previewAll:)];
+        self.analyzeAllButton.frame = NSMakeRect(24, 404, 150, 34);
+        self.analyzeAllButton.bezelStyle = NSBezelStyleRounded;
+        [content addSubview:self.analyzeAllButton];
 
-        NSButton *preferences = [[NSButton alloc] initWithFrame:NSMakeRect(216, 36, 120, 34)];
-        preferences.title = @"Preferenze…";
+        NSButton *preferences = [NSButton buttonWithTitle:@"Preferenze…" target:self action:@selector(showPreferences:)];
+        preferences.frame = NSMakeRect(186, 404, 130, 34);
         preferences.bezelStyle = NSBezelStyleRounded;
-        preferences.target = self;
-        preferences.action = @selector(showPreferences:);
         [content addSubview:preferences];
+
+        self.dashboardScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 24, 592, 360)];
+        self.dashboardScrollView.hasVerticalScroller = YES;
+        self.dashboardScrollView.autohidesScrollers = YES;
+        self.dashboardScrollView.borderType = NSBezelBorder;
+        self.dashboardScrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        self.dashboardDocumentView = [[DSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 576, 100)];
+        self.dashboardDocumentView.autoresizingMask = NSViewWidthSizable;
+        self.dashboardScrollView.documentView = self.dashboardDocumentView;
+        [content addSubview:self.dashboardScrollView];
     }
     [self refreshDashboard];
     [self.dashboardWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+- (NSButton *)dashboardButtonWithTitle:(NSString *)title action:(SEL)action identity:(NSString *)identity frame:(NSRect)frame enabled:(BOOL)enabled {
+    NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
+    button.frame = frame;
+    button.bezelStyle = NSBezelStyleRounded;
+    button.identifier = identity ?: @"";
+    button.enabled = enabled;
+    return button;
+}
+
+- (NSView *)dashboardCardForVolume:(NSURL *)volume identity:(NSString *)identity frame:(NSRect)frame {
+    NSBox *card = [[NSBox alloc] initWithFrame:frame];
+    card.boxType = NSBoxCustom;
+    card.cornerRadius = 10;
+    card.titlePosition = NSNoTitle;
+
+    NSImageView *icon = [[NSImageView alloc] initWithFrame:NSMakeRect(16, 66, 40, 40)];
+    icon.image = [[NSWorkspace sharedWorkspace] iconForFile:volume.path];
+    icon.imageScaling = NSImageScaleProportionallyUpOrDown;
+    [card addSubview:icon];
+
+    NSTextField *name = [NSTextField labelWithString:volume.lastPathComponent ?: @"Disco esterno"];
+    name.frame = NSMakeRect(68, 86, 360, 24);
+    name.font = [NSFont boldSystemFontOfSize:15];
+    [card addSubview:name];
+
+    NSString *rule = [self volumeRuleSummaryForIdentity:identity];
+    if ([self.scheduledCleanupPaths containsObject:volume.path]) rule = @"Pulizia in corso…";
+    NSTextField *status = [NSTextField labelWithString:rule];
+    status.frame = NSMakeRect(68, 64, 440, 20);
+    status.font = [NSFont systemFontOfSize:12];
+    status.textColor = [self isVolumeExcludedForIdentity:identity] ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    [card addSubview:status];
+
+    BOOL excluded = [self isVolumeExcludedForIdentity:identity];
+    BOOL identityVerified = identity.length > 0;
+    BOOL busy = [self.scheduledCleanupPaths containsObject:volume.path];
+    BOOL actionsEnabled = identityVerified && !excluded && !busy;
+    [card addSubview:[self dashboardButtonWithTitle:@"Analizza" action:@selector(previewFromDashboardButton:) identity:identity frame:NSMakeRect(68, 18, 84, 30) enabled:actionsEnabled]];
+    [card addSubview:[self dashboardButtonWithTitle:@"Pulisci ora" action:@selector(cleanFromDashboardButton:) identity:identity frame:NSMakeRect(160, 18, 100, 30) enabled:actionsEnabled]];
+    [card addSubview:[self dashboardButtonWithTitle:@"Pulisci ed espelli" action:@selector(cleanAndEjectFromDashboardButton:) identity:identity frame:NSMakeRect(268, 18, 132, 30) enabled:actionsEnabled]];
+
+    NSButton *excludeButton = [self dashboardButtonWithTitle:(excluded ? @"Includi" : @"Escludi") action:@selector(toggleVolumeRule:) identity:identity frame:NSMakeRect(410, 18, 78, 30) enabled:identityVerified];
+    excludeButton.tag = 1;
+    [card addSubview:excludeButton];
+    NSButton *automaticButton = [self dashboardButtonWithTitle:([self allowsAutomaticCleaningForIdentity:identity] ? @"Blocca auto" : @"Consenti auto") action:@selector(toggleVolumeRule:) identity:identity frame:NSMakeRect(496, 18, 78, 30) enabled:identityVerified && !excluded];
+    automaticButton.tag = 2;
+    [card addSubview:automaticButton];
+    return card;
+}
+
 - (void)refreshDashboard {
-    if (!self.dashboardStatusLabel) return;
+    if (!self.dashboardStatusLabel || !self.dashboardDocumentView) return;
     NSArray<NSURL *> *volumes = self.eligibleVolumes;
+    [self.dashboardVolumeURLs removeAllObjects];
+    for (NSView *subview in [self.dashboardDocumentView.subviews copy]) [subview removeFromSuperview];
     if (volumes.count == 0) {
         self.dashboardStatusLabel.stringValue = @"Nessun disco esterno idoneo collegato.";
+        self.analyzeAllButton.enabled = NO;
+        NSTextField *empty = [NSTextField wrappingLabelWithString:@"Collega un disco esterno fisico e scrivibile per iniziare."];
+        empty.frame = NSMakeRect(24, 28, 520, 40);
+        empty.textColor = NSColor.secondaryLabelColor;
+        [self.dashboardDocumentView addSubview:empty];
+        self.dashboardDocumentView.frame = NSMakeRect(0, 0, self.dashboardDocumentView.frame.size.width, 88);
         return;
     }
-    NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (NSURL *volume in volumes) [names addObject:volume.lastPathComponent];
-    self.dashboardStatusLabel.stringValue = [NSString stringWithFormat:@"Dischi esterni rilevati: %@", [names componentsJoinedByString:@", "]];
+    NSUInteger actionableCount = 0;
+    for (NSURL *volume in volumes) {
+        NSString *identity = self.eligibleVolumeIdentities[volume.path];
+        if (identity.length) self.dashboardVolumeURLs[identity] = volume;
+        if (identity.length && ![self isVolumeExcludedForIdentity:identity]) actionableCount++;
+    }
+    self.dashboardStatusLabel.stringValue = [NSString stringWithFormat:@"%lu dischi esterni rilevati · profilo %@", (unsigned long)volumes.count, [self cleanupProfileDisplayName:[[NSUserDefaults standardUserDefaults] stringForKey:DSCleanupProfile]]];
+    self.analyzeAllButton.enabled = actionableCount > 0;
+    CGFloat width = self.dashboardDocumentView.frame.size.width;
+    if (width < 560) width = 560;
+    CGFloat y = 16;
+    for (NSURL *volume in volumes) {
+        NSString *identity = self.eligibleVolumeIdentities[volume.path];
+        [self.dashboardDocumentView addSubview:[self dashboardCardForVolume:volume identity:identity frame:NSMakeRect(8, y, width - 16, 122)]];
+        y += 136;
+    }
+    self.dashboardDocumentView.frame = NSMakeRect(0, 0, width, y);
 }
 
 - (NSButton *)checkbox:(NSString *)title key:(NSString *)key y:(CGFloat)y {
@@ -501,6 +1022,8 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     button.target = self;
     button.action = @selector(saveCheckbox:);
     button.identifier = key;
+    button.accessibilityLabel = title;
+    self.preferenceCheckboxes[key] = button;
     return button;
 }
 
@@ -510,50 +1033,127 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     field.identifier = key;
     field.target = self;
     field.action = @selector(saveTextPreference:);
+    field.continuous = YES;
+    self.preferenceTextFields[key] = field;
     return field;
+}
+
+- (NSTextField *)preferenceLabel:(NSString *)text y:(CGFloat)y height:(CGFloat)height font:(NSFont *)font color:(NSColor *)color {
+    NSTextField *label = [NSTextField wrappingLabelWithString:text];
+    label.frame = NSMakeRect(24, y, 390, height);
+    label.font = font ?: [NSFont systemFontOfSize:12];
+    label.textColor = color ?: NSColor.labelColor;
+    return label;
+}
+
+- (NSTextField *)preferenceSection:(NSString *)title y:(CGFloat)y {
+    NSTextField *section = [NSTextField labelWithString:title.uppercaseString];
+    section.frame = NSMakeRect(24, y, 390, 22);
+    section.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+    section.textColor = NSColor.controlAccentColor;
+    return section;
+}
+
+- (void)refreshPreferenceControls {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    for (NSString *key in self.preferenceCheckboxes) {
+        self.preferenceCheckboxes[key].state = [defaults boolForKey:key] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    self.preferenceTextFields[DSAppleDoubleExtensions].stringValue = [defaults stringForKey:DSAppleDoubleExtensions] ?: @"";
+    self.preferenceTextFields[DSExcludedVolumes].stringValue = [defaults stringForKey:DSExcludedVolumes] ?: @"";
+    [self selectProfile:[defaults stringForKey:DSCleanupProfile] ?: DSProfileCrossPlatform inPopup:self.profilePopup];
 }
 
 - (void)showPreferences:(id)sender {
     if (!self.preferencesWindow) {
-        self.preferencesWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 440, 610)
-            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        self.preferencesWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 470, 620)
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered defer:NO];
         self.preferencesWindow.title = @"Preferenze DriveSweep";
         NSView *content = self.preferencesWindow.contentView;
-        [content addSubview:[self checkbox:@"Pulisci automaticamente quando collego un disco" key:DSAutomaticCleaning y:560]];
-        [content addSubview:[self checkbox:@"Rimuovi file ._* (AppleDouble)" key:DSAppleDouble y:530]];
-        NSTextField *extensionsLabel = [NSTextField labelWithString:@"Mantieni AppleDouble per estensioni (es. eps, psd):"];
-        extensionsLabel.frame = NSMakeRect(24, 505, 390, 20); [content addSubview:extensionsLabel];
-        [content addSubview:[self preferenceTextField:DSAppleDoubleExtensions y:477]];
-        [content addSubview:[self checkbox:@"Rimuovi .DS_Store" key:DSDSStore y:445]];
-        [content addSubview:[self checkbox:@"Svuota .Trashes del disco" key:DSTrashes y:417]];
-        [content addSubview:[self checkbox:@"Rimuovi indice Spotlight (.Spotlight-V100)" key:DSSpotlight y:389]];
-        [content addSubview:[self checkbox:@"Rimuovi registro eventi (.fseventsd)" key:DSFileEvents y:361]];
-        [content addSubview:[self checkbox:@"Rimuovi file .apdisk" key:DSApdisk y:333]];
-        [content addSubview:[self checkbox:@"Rimuovi .VolumeIcon.icns" key:DSVolumeIcon y:305]];
-        [content addSubview:[self checkbox:@"Rimuovi Desktop.ini" key:DSDesktopIni y:277]];
-        [content addSubview:[self checkbox:@"Rimuovi Thumbs.db" key:DSThumbsDb y:249]];
-        [content addSubview:[self checkbox:@"Rimuovi .TemporaryItems del disco" key:DSTemporaryItems y:221]];
-        [content addSubview:[self checkbox:@"Rimuovi cartelle .AppleDouble" key:DSAppleDoubleDirectories y:193]];
-        NSTextField *label = [NSTextField labelWithString:@"Escludi dischi (nomi separati da virgola):"];
-        label.frame = NSMakeRect(24, 154, 390, 20); [content addSubview:label];
-        [content addSubview:[self preferenceTextField:DSExcludedVolumes y:126]];
-        NSTextField *note = [NSTextField labelWithString:@"Per sicurezza DriveSweep non pulisce mai dischi interni, immagini disco o volumi in sola lettura."];
-        note.frame = NSMakeRect(24, 38, 400, 20); note.font = [NSFont systemFontOfSize:11]; note.textColor = NSColor.secondaryLabelColor;
-        [content addSubview:note];
-        NSTextField *warning = [NSTextField wrappingLabelWithString:@"Le pulizie aggiuntive sono disattivate per default. Abilitali solo dopo avere verificato che quei metadati non servano ai tuoi file."];
-        warning.frame = NSMakeRect(24, 4, 400, 30); warning.font = [NSFont systemFontOfSize:11]; warning.textColor = NSColor.secondaryLabelColor;
-        [content addSubview:warning];
+        self.preferenceCheckboxes = [NSMutableDictionary dictionary];
+        self.preferenceTextFields = [NSMutableDictionary dictionary];
+        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:content.bounds];
+        scroll.hasVerticalScroller = YES;
+        scroll.autohidesScrollers = YES;
+        scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        DSFlippedView *document = [[DSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 1040)];
+        scroll.documentView = document;
+        [content addSubview:scroll];
+
+        [document addSubview:[self preferenceSection:@"Profilo operativo" y:20]];
+        self.profilePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24, 48, 390, 28) pullsDown:NO];
+        NSArray<NSArray<NSString *> *> *profiles = @[
+            @[DSProfileCrossPlatform, @"Condivisione multipiattaforma"],
+            @[DSProfileMacMetadata, @"Conserva metadati Mac"],
+            @[DSProfileCustom, @"Personalizzato"]
+        ];
+        for (NSArray<NSString *> *profile in profiles) {
+            [self.profilePopup addItemWithTitle:profile[1]];
+            self.profilePopup.lastItem.representedObject = profile[0];
+        }
+        self.profilePopup.target = self;
+        self.profilePopup.action = @selector(profileSelectionChanged:);
+        [document addSubview:self.profilePopup];
+        [document addSubview:[self preferenceLabel:[self cleanupProfileDescription:[[NSUserDefaults standardUserDefaults] stringForKey:DSCleanupProfile]] y:82 height:38 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
+
+        [document addSubview:[self preferenceSection:@"Modalità automatica" y:132]];
+        [document addSubview:[self checkbox:@"Pulisci automaticamente dopo il mount" key:DSAutomaticCleaning y:160]];
+        [document addSubview:[self preferenceLabel:@"Disattivata per default. Anche se attiva, richiede il consenso esplicito per ogni VolumeUUID." y:188 height:34 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
+
+        [document addSubview:[self preferenceSection:@"Metadati quotidiani" y:238]];
+        [document addSubview:[self checkbox:@"Rimuovi file ._* (AppleDouble)" key:DSAppleDouble y:266]];
+        [document addSubview:[self preferenceLabel:@"Rischio: può rimuovere resource fork, FinderInfo o altri metadati Mac. Usa la whitelist per eps, psd e file legacy." y:294 height:42 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
+        [document addSubview:[self preferenceLabel:@"Mantieni AppleDouble per estensioni (es. eps, psd):" y:340 height:20 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
+        [document addSubview:[self preferenceTextField:DSAppleDoubleExtensions y:366]];
+        [document addSubview:[self checkbox:@"Rimuovi .DS_Store" key:DSDSStore y:400]];
+        [document addSubview:[self preferenceLabel:@"Rischio basso: Finder può ricreare questi file, ma le viste delle cartelle possono tornare ai valori predefiniti." y:428 height:34 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
+
+        [document addSubview:[self preferenceSection:@"Categorie avanzate" y:478]];
+        [document addSubview:[self preferenceLabel:@"Off per default. Svuotare Cestino, indici e cartelle di sistema può cancellare dati recuperabili o richiedere che macOS li ricrei." y:506 height:40 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
+        NSArray<NSArray<NSString *> *> *advanced = @[
+            @[DSTrashes, @"Svuota .Trashes del disco"],
+            @[DSSpotlight, @"Rimuovi indice Spotlight (.Spotlight-V100)"],
+            @[DSFileEvents, @"Rimuovi registro eventi (.fseventsd)"],
+            @[DSApdisk, @"Rimuovi file .apdisk"],
+            @[DSVolumeIcon, @"Rimuovi .VolumeIcon.icns"],
+            @[DSDesktopIni, @"Rimuovi Desktop.ini"],
+            @[DSThumbsDb, @"Rimuovi Thumbs.db"],
+            @[DSTemporaryItems, @"Rimuovi .TemporaryItems del disco"],
+            @[DSAppleDoubleDirectories, @"Rimuovi cartelle .AppleDouble"]
+        ];
+        CGFloat advancedY = 552;
+        for (NSArray<NSString *> *item in advanced) {
+            [document addSubview:[self checkbox:item[1] key:item[0] y:advancedY]];
+            advancedY += 28;
+        }
+
+        [document addSubview:[self preferenceSection:@"Dischi esclusi (legacy)" y:824]];
+        [document addSubview:[self preferenceLabel:@"Nomi separati da virgola. Per una regola stabile usa il pulsante Escludi sulla scheda del disco: quella regola è legata al VolumeUUID." y:852 height:40 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
+        [document addSubview:[self preferenceTextField:DSExcludedVolumes y:898]];
+        NSButton *reset = [NSButton buttonWithTitle:@"Ripristina impostazioni sicure" target:self action:@selector(resetSafeDefaults:)];
+        reset.frame = NSMakeRect(24, 936, 220, 30);
+        reset.bezelStyle = NSBezelStyleRounded;
+        [document addSubview:reset];
+        [document addSubview:[self preferenceLabel:@"Ripristina AppleDouble + .DS_Store, disattiva automatico e categorie avanzate. Non modifica le regole per singolo disco." y:974 height:38 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
     }
+    [self refreshPreferenceControls];
     [self.preferencesWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
 
 - (void)saveCheckbox:(NSButton *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:(sender.state == NSControlStateValueOn) forKey:sender.identifier];
+    if ([DSCleanupPreferenceKeys() containsObject:sender.identifier]) {
+        [[NSUserDefaults standardUserDefaults] setObject:DSProfileCustom forKey:DSCleanupProfile];
+    }
+    [self refreshPreferenceControls];
     [self rebuildMenu];
 }
-- (void)saveTextPreference:(NSTextField *)sender { [[NSUserDefaults standardUserDefaults] setObject:sender.stringValue forKey:sender.identifier]; [self rebuildMenu]; }
+- (void)saveTextPreference:(NSTextField *)sender {
+    [[NSUserDefaults standardUserDefaults] setObject:sender.stringValue forKey:sender.identifier];
+    [self rebuildMenu];
+}
 
 @end
 

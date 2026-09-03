@@ -9,7 +9,9 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Build application and disk image
+      - name: Run build checks
+        run: make test
+      - name: Build disk image
         run: make dmg
       - name: Verify signature
         run: codesign --verify --deep --strict --verbose=2 build/DriveSweep.app
