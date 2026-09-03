@@ -8,6 +8,8 @@ It deliberately touches only physical external, writable volumes. It ignores the
 
 - Detects external drives at mount time and can clean an approved stable mount once, after a short delay.
 - Opens a visible dashboard immediately, while keeping a broom menu-bar icon for quick actions and a non-destructive **Analyze** report for each drive.
+- Shows the disk, current category, a redacted folder name, and completed categories while it works. It never invents a file-count or byte-count percentage it cannot know.
+- Lets you cancel before the next filesystem item. If macOS is still opening a large folder, DriveSweep says so and waits rather than forcing the filesystem.
 - Removes AppleDouble `._*` files while preserving extensions you add to the AppleDouble whitelist.
 - Optionally removes `.DS_Store`, `.Trashes`, `.Spotlight-V100`, `.fseventsd`, `.apdisk`, `.VolumeIcon.icns`, `Desktop.ini`, `Thumbs.db`, `.TemporaryItems`, and `.AppleDouble` directories.
 - Lists each eligible drive with **Analyze**, **Clean now**, and **Clean and eject** actions, plus per-UUID exclusion and automatic-cleanup controls.
@@ -21,7 +23,7 @@ Analyze is always non-destructive: it reports candidates by category, AppleDoubl
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.3.0` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.3.1` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -53,10 +55,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.3.0`, the published SHA-256 is:
+For `v0.3.1`, the published SHA-256 is:
 
 ```text
-8be13050a741e8cb58506bfc7bf292905ae7c261a8ed1607aa8a804e6e3f87be
+f09e091cb781bfcd8f25c99359ad9380a41f205823f80db8b6135376d7b8c287
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.

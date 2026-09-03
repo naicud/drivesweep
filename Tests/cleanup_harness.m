@@ -3,12 +3,17 @@
 #undef main
 
 @interface TestDriveSweepController : DriveSweepController
+@property(nonatomic) NSUInteger presentedAlertCount;
 @end
 
 @implementation TestDriveSweepController
 
 - (BOOL)isEligibleExternalVolume:(NSURL *)url error:(NSError **)error {
     return YES;
+}
+
+- (void)presentAlertModally:(NSAlert *)alert {
+    self.presentedAlertCount += 1;
 }
 
 @end
@@ -71,6 +76,7 @@ int main(void) {
 
         [defaults setBool:YES forKey:DSAppleDouble];
         [defaults setBool:YES forKey:DSDSStore];
+        [defaults setObject:@"eps" forKey:DSAppleDoubleExtensions];
         [defaults setBool:YES forKey:DSTrashes];
         [defaults setBool:YES forKey:DSSpotlight];
         [defaults setBool:YES forKey:DSFileEvents];
@@ -84,7 +90,18 @@ int main(void) {
 
         NSURL *volume = [NSURL fileURLWithPath:root];
         NSDictionary<NSString *, id> *options = [controller cleanupOptionsSnapshot];
-        NSDictionary<NSString *, id> *preview = [controller previewVolumeOnWorker:volume expectedMountIdentity:nil options:options];
+        [controller showPreviewReport:@{
+            @"success": @YES,
+            @"counts": @{},
+            @"protectedAppleDouble": @0,
+            @"errors": @[]
+        } options:options volume:volume];
+        BOOL alertPresentationSeam = controller.presentedAlertCount == 1;
+        DSOperationState *previewOperation = [[DSOperationState alloc] init];
+        previewOperation.volumeURL = volume;
+        previewOperation.volumeName = @"Fixture";
+        previewOperation.totalCategories = [controller enabledCategoryCountForOptions:options];
+        NSDictionary<NSString *, id> *preview = [controller previewVolumeOnWorker:volume expectedMountIdentity:nil options:options operation:previewOperation];
         NSDictionary<NSString *, NSNumber *> *counts = preview[@"counts"];
         BOOL previewed = [preview[@"success"] boolValue] &&
             [counts[DSAppleDouble] unsignedIntegerValue] == 1 &&
@@ -99,9 +116,22 @@ int main(void) {
             [counts[DSThumbsDb] unsignedIntegerValue] == 1 &&
             [counts[DSTemporaryItems] unsignedIntegerValue] == 1 &&
             [counts[DSAppleDoubleDirectories] unsignedIntegerValue] == 1 &&
+            previewOperation.completedCategories == previewOperation.totalCategories &&
             [manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".DS_Store"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._photo.jpg"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._keep.eps"]];
+
+        DSOperationState *cancelledScanOperation = [[DSOperationState alloc] init];
+        cancelledScanOperation.kind = DSOperationKindPreview;
+        cancelledScanOperation.volumeURL = volume;
+        cancelledScanOperation.volumeName = @"Fixture";
+        cancelledScanOperation.totalCategories = [controller enabledCategoryCountForOptions:options];
+        cancelledScanOperation.cancellationRequested = YES;
+        NSDictionary<NSString *, id> *cancelledPreview = [controller previewVolumeOnWorker:volume expectedMountIdentity:nil options:options operation:cancelledScanOperation];
+        BOOL cancelledScanTransition = ![cancelledPreview[@"success"] boolValue] &&
+            [cancelledPreview[@"cancelled"] boolValue] &&
+            [[controller operationStatusText:cancelledScanOperation] containsString:@"attendo che il filesystem"] &&
+            [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._photo.jpg"]];
 
         for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:NO forKey:key];
         [defaults setObject:@"" forKey:DSAppleDoubleExtensions];
@@ -120,11 +150,32 @@ int main(void) {
             ![manager fileExistsAtPath:[root stringByAppendingPathComponent:@"Desktop.ini"]] &&
             ![manager fileExistsAtPath:[root stringByAppendingPathComponent:@"Thumbs.db"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"purge.cache"]] &&
-            [manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".apdisk/keep.txt"]] &&
+        [manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".apdisk/keep.txt"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"photo.jpg"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.eps"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
+        [defaults setBool:YES forKey:DSAppleDouble];
+        [defaults setBool:YES forKey:DSDSStore];
+        [defaults setObject:@"eps" forKey:DSAppleDoubleExtensions];
+        [@"appledouble" writeToFile:[root stringByAppendingPathComponent:@"._cancel.jpg"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [@"metadata" writeToFile:[root stringByAppendingPathComponent:@".DS_Store"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSDictionary<NSString *, id> *cancellationOptions = [controller cleanupOptionsSnapshot];
+        DSOperationState *cancellationOperation = [[DSOperationState alloc] init];
+        cancellationOperation.volumeURL = volume;
+        cancellationOperation.volumeName = @"Fixture";
+        cancellationOperation.totalCategories = [controller enabledCategoryCountForOptions:cancellationOptions];
+        cancellationOperation.progressHandler = ^(DSOperationState *operation) {
+            if (operation.removedCount >= 1) operation.cancellationRequested = YES;
+        };
+        NSDictionary<NSString *, id> *cancelled = [controller cleanVolumeOnWorker:volume expectedMountIdentity:nil options:cancellationOptions operation:cancellationOperation];
+        BOOL cancellationStopsCleanup = ![cancelled[@"success"] boolValue] &&
+            [cancelled[@"cancelled"] boolValue] &&
+            [cancelled[@"removed"] unsignedIntegerValue] == 1 &&
+            ![manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._cancel.jpg"]] &&
+            [manager fileExistsAtPath:[root stringByAppendingPathComponent:@".DS_Store"]] &&
+            [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
+        BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         [manager removeItemAtPath:root error:nil];
-        return profileSnapshots && uuidRules && previewed && cleanedWithSnapshot ? 0 : 1;
+        return profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
     }
 }
