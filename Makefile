@@ -29,6 +29,7 @@ cleanup-harness:
 
 test: build cleanup-harness
 	plutil -lint "$(APP)/Contents/Info.plist"
+	test "$$(plutil -extract LSUIElement raw "$(APP)/Contents/Info.plist")" = false
 	codesign --verify --deep --strict --verbose=2 "$(APP)"
 	"$(BUILD_DIR)/cleanup-harness"
 

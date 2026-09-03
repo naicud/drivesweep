@@ -28,6 +28,7 @@ static NSString *const DSProfileCustom = @"custom";
 static NSString *const DSVolumeRuleExcluded = @"excluded";
 static NSString *const DSVolumeRuleAutomatic = @"allowAutomatic";
 static NSString *const DSVolumeRuleName = @"name";
+static NSUInteger DSPreviewFileTraversalCount = 0;
 
 static NSArray<NSString *> *DSCleanupPreferenceKeys(void) {
     return @[
@@ -143,8 +144,29 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 @implementation DriveSweepController
 
+- (void)installApplicationMenu {
+    NSMenu *menuBar = [[NSMenu alloc] initWithTitle:@"DriveSweep"];
+    NSMenuItem *applicationItem = [[NSMenuItem alloc] initWithTitle:@"DriveSweep" action:nil keyEquivalent:@""];
+    NSMenu *applicationMenu = [[NSMenu alloc] initWithTitle:@"DriveSweep"];
+    NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Apri DriveSweep" action:@selector(showDashboard:) keyEquivalent:@"o"];
+    open.target = self;
+    [applicationMenu addItem:open];
+    NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"Preferenze…" action:@selector(showPreferences:) keyEquivalent:@","];
+    preferences.target = self;
+    [applicationMenu addItem:preferences];
+    [applicationMenu addItem:[NSMenuItem separatorItem]];
+    [applicationMenu addItemWithTitle:@"Nascondi DriveSweep" action:@selector(hide:) keyEquivalent:@"h"];
+    [applicationMenu addItemWithTitle:@"Nascondi altre" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
+    [applicationMenu addItem:[NSMenuItem separatorItem]];
+    [applicationMenu addItemWithTitle:@"Esci da DriveSweep" action:@selector(terminate:) keyEquivalent:@"q"];
+    applicationItem.submenu = applicationMenu;
+    [menuBar addItem:applicationItem];
+    NSApp.mainMenu = menuBar;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [[NSUserDefaults standardUserDefaults] registerDefaults:DSDefaultPreferences()];
+    [self installApplicationMenu];
 
     self.eligibleVolumes = @[];
     self.eligibleVolumeIdentities = @{};
@@ -175,6 +197,15 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self.scanTimer invalidate];
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)hasVisibleWindows {
+    if (!hasVisibleWindows) [self showDashboard:nil];
+    return YES;
+}
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    return NO;
 }
 
 - (NSArray<NSURL *> *)externalVolumes {
@@ -617,6 +648,15 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if ([self operationShouldStop:operation]) break;
         NSURL *entryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_accpath isDirectory:NO relativeToURL:nil];
         [self publishOperation:operation category:nil location:entryURL categoryFinished:NO force:NO];
+        if (entry->fts_info == FTS_D) {
+            NSNumber *isPackage = nil;
+            NSURL *directoryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_path isDirectory:YES relativeToURL:nil];
+            [directoryURL getResourceValue:&isPackage forKey:NSURLIsPackageKey error:nil];
+            if (isPackage.boolValue) {
+                fts_set(tree, entry, FTS_SKIP);
+                continue;
+            }
+        }
         if (entry->fts_info == FTS_DNR || entry->fts_info == FTS_ERR) {
             [errors addObject:[NSString stringWithFormat:@"%s (%s)", entry->fts_path, strerror(entry->fts_errno)]];
             continue;
@@ -717,6 +757,59 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     return @{ @"removable": @(removable), @"protected": @(protectedCount) };
 }
 
+- (NSDictionary<NSString *, id> *)previewFileCountsOnePassFromVolume:(NSURL *)volume options:(NSDictionary<NSString *, id> *)options errors:(NSMutableArray<NSString *> *)errors operation:(DSOperationState *)operation {
+    DSPreviewFileTraversalCount++;
+    [self publishOperation:operation category:DSAppleDouble location:volume categoryFinished:NO force:YES];
+    if ([self operationShouldStop:operation]) return @{ @"cancelled": @YES, @"counts": @{}, @"protected": @0 };
+    char *paths[] = { (char *)volume.fileSystemRepresentation, NULL };
+    FTS *tree = fts_open(paths, FTS_NOCHDIR | FTS_PHYSICAL | FTS_XDEV, NULL);
+    if (!tree) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (%s)", volume.lastPathComponent, strerror(errno)]];
+        return @{ @"cancelled": @NO, @"counts": @{}, @"protected": @0 };
+    }
+    NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+    for (NSString *key in DSCleanupPreferenceKeys()) counts[key] = @0;
+    NSUInteger protectedCount = 0;
+    NSSet<NSString *> *protectedExtensions = options[DSAppleDoubleExtensions];
+    NSDictionary<NSString *, NSString *> *fileNames = @{ DSDSStore: @".DS_Store", DSApdisk: @".apdisk", DSVolumeIcon: @".VolumeIcon.icns", DSDesktopIni: @"Desktop.ini", DSThumbsDb: @"Thumbs.db" };
+    FTSENT *entry = nil;
+    while ((entry = fts_read(tree))) {
+        if ([self operationShouldStop:operation]) break;
+        NSURL *entryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_path isDirectory:entry->fts_info == FTS_D relativeToURL:nil];
+        [self publishOperation:operation category:nil location:entryURL categoryFinished:NO force:NO];
+        if (entry->fts_info == FTS_D) {
+            NSNumber *isPackage = nil;
+            [entryURL getResourceValue:&isPackage forKey:NSURLIsPackageKey error:nil];
+            NSString *directoryName = [NSString stringWithUTF8String:entry->fts_name];
+            if (isPackage.boolValue || [@[@".Trashes", @".Spotlight-V100", @".fseventsd"] containsObject:directoryName]) {
+                fts_set(tree, entry, FTS_SKIP);
+            }
+            if ([self cleanupOption:DSAppleDoubleDirectories isEnabledInOptions:options] && [directoryName isEqualToString:@".AppleDouble"]) {
+                counts[DSAppleDoubleDirectories] = @([counts[DSAppleDoubleDirectories] unsignedIntegerValue] + 1);
+            }
+            continue;
+        }
+        if (entry->fts_info == FTS_DNR || entry->fts_info == FTS_ERR) {
+            [errors addObject:[NSString stringWithFormat:@"%s (%s)", entry->fts_path, strerror(entry->fts_errno)]];
+            continue;
+        }
+        if (entry->fts_info != FTS_F) continue;
+        NSString *name = [NSString stringWithUTF8String:entry->fts_name];
+        if ([self cleanupOption:DSAppleDouble isEnabledInOptions:options] && [name hasPrefix:@"._"]) {
+            NSString *extension = [[name substringFromIndex:2].pathExtension lowercaseString];
+            if ([protectedExtensions containsObject:extension]) protectedCount++;
+            else counts[DSAppleDouble] = @([counts[DSAppleDouble] unsignedIntegerValue] + 1);
+        }
+        for (NSString *key in fileNames) {
+            if ([self cleanupOption:key isEnabledInOptions:options] && [name isEqualToString:fileNames[key]]) {
+                counts[key] = @([counts[key] unsignedIntegerValue] + 1);
+            }
+        }
+    }
+    fts_close(tree);
+    return @{ @"cancelled": @([self operationShouldStop:operation]), @"counts": counts.copy, @"protected": @(protectedCount) };
+}
+
 - (NSDictionary<NSString *, id> *)previewVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options {
     return [self previewVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity options:options operation:nil];
 }
@@ -741,24 +834,13 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
     NSUInteger protectedAppleDouble = 0;
     for (NSString *key in DSCleanupPreferenceKeys()) counts[key] = @0;
-    if ([self cleanupOption:DSAppleDouble isEnabledInOptions:options]) {
-        [self publishOperation:operation category:DSAppleDouble location:volume categoryFinished:NO force:YES];
-        NSDictionary<NSString *, NSNumber *> *appleDouble = [self countAppleDoubleFilesFromVolume:volume protectedExtensions:options[DSAppleDoubleExtensions] errors:errors operation:operation];
-        counts[DSAppleDouble] = appleDouble[@"removable"];
-        protectedAppleDouble = [appleDouble[@"protected"] unsignedIntegerValue];
-        if ([self operationShouldStop:operation]) return [self cancelledPreviewResult:counts errors:errors];
-        [self publishOperation:operation category:DSAppleDouble location:nil categoryFinished:YES force:YES];
-    }
-    NSArray<NSArray<id> *> *fileCategories = @[
-        @[DSDSStore, @".DS_Store", @NO], @[DSApdisk, @".apdisk", @NO], @[DSVolumeIcon, @".VolumeIcon.icns", @NO],
-        @[DSDesktopIni, @"Desktop.ini", @NO], @[DSThumbsDb, @"Thumbs.db", @NO], @[DSAppleDoubleDirectories, @".AppleDouble", @YES]
-    ];
-    for (NSArray<id> *entry in fileCategories) {
-        NSString *key = entry[0]; if (![self cleanupOption:key isEnabledInOptions:options]) continue;
-        [self publishOperation:operation category:key location:volume categoryFinished:NO force:YES];
-        counts[key] = @([self countNamedFiles:entry[1] fromVolume:volume directoriesOnly:[entry[2] boolValue] errors:errors operation:operation]);
-        if ([self operationShouldStop:operation]) return [self cancelledPreviewResult:counts errors:errors];
-        [self publishOperation:operation category:key location:nil categoryFinished:YES force:YES];
+    NSDictionary<NSString *, id> *filePreview = [self previewFileCountsOnePassFromVolume:volume options:options errors:errors operation:operation];
+    NSDictionary<NSString *, NSNumber *> *fileCounts = filePreview[@"counts"];
+    for (NSString *key in DSCleanupPreferenceKeys()) if (fileCounts[key]) counts[key] = fileCounts[key];
+    protectedAppleDouble = [filePreview[@"protected"] unsignedIntegerValue];
+    if ([filePreview[@"cancelled"] boolValue]) return [self cancelledPreviewResult:counts errors:errors];
+    for (NSString *key in @[DSAppleDouble, DSDSStore, DSApdisk, DSVolumeIcon, DSDesktopIni, DSThumbsDb, DSAppleDoubleDirectories]) {
+        if ([self cleanupOption:key isEnabledInOptions:options]) [self publishOperation:operation category:key location:nil categoryFinished:YES force:YES];
     }
     NSDictionary<NSString *, NSString *> *rootCategories = @{ DSTrashes: @".Trashes", DSSpotlight: @".Spotlight-V100", DSFileEvents: @".fseventsd", DSTemporaryItems: @".TemporaryItems" };
     for (NSString *key in rootCategories) {
@@ -906,8 +988,8 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     }
 
     /*
-     * DriveSweep is an LSUIElement app with a manually-created dashboard
-     * window. On macOS 26, beginSheetModalForWindow: can route through an
+     * DriveSweep has a manually-created dashboard window. On macOS 26,
+     * beginSheetModalForWindow: can route through an
      * internal NSTitlebarBackgroundView and abort the process. runModal
      * orders the alert's own NSWindow and is deterministic for this app.
      */
@@ -1485,7 +1567,7 @@ int main(int argc, const char *argv[]) {
         NSApplication *app = [NSApplication sharedApplication];
         DriveSweepController *controller = [[DriveSweepController alloc] init];
         app.delegate = controller;
-        [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         [app run];
     }
     return 0;

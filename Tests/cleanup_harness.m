@@ -4,6 +4,7 @@
 
 @interface TestDriveSweepController : DriveSweepController
 @property(nonatomic) NSUInteger presentedAlertCount;
+@property(nonatomic) NSUInteger dashboardPresentationCount;
 @end
 
 @implementation TestDriveSweepController
@@ -14,6 +15,10 @@
 
 - (void)presentAlertModally:(NSAlert *)alert {
     self.presentedAlertCount += 1;
+}
+
+- (void)showDashboard:(id)sender {
+    self.dashboardPresentationCount += 1;
 }
 
 @end
@@ -48,12 +53,25 @@ int main(void) {
         }
         [@"sentinel" writeToFile:[root stringByAppendingPathComponent:@"keep.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
         [@"sentinel" writeToFile:[nested stringByAppendingPathComponent:@".apdisk/keep.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString *benchmarkRoot = [root stringByAppendingPathComponent:@"benchmark"];
+        if (!CreateDirectory(manager, benchmarkRoot)) return 1;
+        for (NSUInteger directoryIndex = 0; directoryIndex < 1200; directoryIndex++) {
+            NSString *directory = [benchmarkRoot stringByAppendingPathComponent:[NSString stringWithFormat:@"d-%04lu", (unsigned long)directoryIndex]];
+            if (!CreateDirectory(manager, directory)) return 1;
+            for (NSUInteger fileIndex = 0; fileIndex < 10; fileIndex++) {
+                NSString *path = [directory stringByAppendingPathComponent:[NSString stringWithFormat:@"entry-%02lu.dat", (unsigned long)fileIndex]];
+                if (![@"payload" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) return 1;
+            }
+        }
 
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSDictionary<NSString *, id> *registeredDefaults = DSDefaultPreferences();
         if (![registeredDefaults[DSAppleDouble] boolValue] ||
             [registeredDefaults[DSAutomaticCleaning] boolValue]) return 1;
         TestDriveSweepController *controller = [[TestDriveSweepController alloc] init];
+        BOOL dockLifecycle = ![controller applicationShouldTerminateAfterLastWindowClosed:NSApp] &&
+            [controller applicationShouldHandleReopen:NSApp hasVisibleWindows:NO] &&
+            controller.dashboardPresentationCount == 1;
         [controller applyCleanupProfile:DSProfileMacMetadata];
         NSDictionary<NSString *, id> *macMetadataOptions = [controller cleanupOptionsSnapshot];
         [controller applyCleanupProfile:DSProfileCrossPlatform];
@@ -101,7 +119,11 @@ int main(void) {
         previewOperation.volumeURL = volume;
         previewOperation.volumeName = @"Fixture";
         previewOperation.totalCategories = [controller enabledCategoryCountForOptions:options];
+        NSUInteger traversalBeforePreview = DSPreviewFileTraversalCount;
+        NSTimeInterval previewStarted = NSDate.timeIntervalSinceReferenceDate;
         NSDictionary<NSString *, id> *preview = [controller previewVolumeOnWorker:volume expectedMountIdentity:nil options:options operation:previewOperation];
+        NSTimeInterval previewElapsed = NSDate.timeIntervalSinceReferenceDate - previewStarted;
+        fprintf(stderr, "DriveSweep preview fixture (1200 dirs, 12000 entries): %.3fs\n", previewElapsed);
         NSDictionary<NSString *, NSNumber *> *counts = preview[@"counts"];
         BOOL previewed = [preview[@"success"] boolValue] &&
             [counts[DSAppleDouble] unsignedIntegerValue] == 1 &&
@@ -117,6 +139,7 @@ int main(void) {
             [counts[DSTemporaryItems] unsignedIntegerValue] == 1 &&
             [counts[DSAppleDoubleDirectories] unsignedIntegerValue] == 1 &&
             previewOperation.completedCategories == previewOperation.totalCategories &&
+            DSPreviewFileTraversalCount == traversalBeforePreview + 1 &&
             [manager fileExistsAtPath:[nested stringByAppendingPathComponent:@".DS_Store"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._photo.jpg"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"._keep.eps"]];
@@ -176,6 +199,6 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         [manager removeItemAtPath:root error:nil];
-        return profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
+        return dockLifecycle && profileSnapshots && uuidRules && alertPresentationSeam && previewed && cancelledScanTransition && cleanedWithSnapshot && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
     }
 }
