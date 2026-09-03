@@ -17,6 +17,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 ## What it does
 
 - Detects external drives at mount time and can clean an approved stable mount once, after a short delay.
+- Can also run a periodic background cleanup every 15 minutes, 1 hour, 6 hours, or 24 hours. It is off by default and requires both the global automatic-cleanup switch and consent for that exact VolumeUUID.
 - Opens a visible dashboard immediately, appears in the Dock, and keeps a broom menu-bar icon for quick actions and a non-destructive **Analyze** report for each drive.
 - Shows the disk, current category, a redacted folder name, and completed categories while it works. It never invents a file-count or byte-count percentage it cannot know.
 - Lets you cancel before the next filesystem item. If macOS is still opening a large folder, DriveSweep says so and waits rather than forcing the filesystem.
@@ -29,6 +30,8 @@ It deliberately touches only physical external, writable volumes. It ignores the
 ## Safety model
 
 Automatic cleanup is **off by default**. It never runs merely because a drive is external: you must enable the global automatic-cleanup preference **and** explicitly allow automatic cleaning for that drive's stable VolumeUUID in its dashboard card. DriveSweep waits briefly after mount, rechecks the identity and consent, then cleans the approved mount once. When you finish copying, use **Clean and eject** for a final pass.
+
+Periodic cleanup is a separate, opt-in setting in **Preferences**. When enabled together with automatic cleanup, DriveSweep starts one background pass shortly after launch and repeats at the selected interval. It uses the same UUID consent, exclusion, mount-identity, and cancellation checks as other automatic cleanups; it never ejects a disk. Keep it disabled while copying files to a drive.
 
 Analyze is always non-destructive: it reports candidates by category, AppleDouble files protected by the whitelist, and scan errors before you choose a cleanup action. Removing `._*` files may discard macOS-only metadata such as custom icons or legacy resource forks. The default **Cross-platform sharing** profile enables AppleDouble and `.DS_Store`; **Preserve Mac metadata** removes only `.DS_Store`; **Custom** preserves your individual toggles. All advanced categories require an explicit opt-in. Use the AppleDouble extension whitelist for types whose resource metadata must be preserved.
 
@@ -49,10 +52,11 @@ These boundaries reduce the chance of acting on the wrong target; they do not ma
 3. If AppleDouble metadata matters for a format, add its extension to the whitelist in **Preferences** and analyze again.
 4. Choose **Clean now** only after confirming the report, or choose **Clean and eject** after the last file copy.
 5. Keep automatic cleanup off unless you have tested the exact drive. If you enable it, allow it separately on that drive's dashboard card.
+6. To use periodic cleanup, enable it in **Preferences**, select an interval, and keep the global automatic-cleanup switch and that drive's UUID consent enabled. The broom icon stays in the macOS menu bar; its menu states whether periodic cleanup is active.
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.4.4` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.4.5` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -84,10 +88,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.4.4`, the published SHA-256 is:
+For `v0.4.5`, the published SHA-256 is:
 
 ```text
-99bdb6ae7db5fed963506e15c2c4663e019d7fdf91f649096128b52038881cac
+8a516cd3325497eb8751bb4fb3fa842c6249fbbafb3943a6dbf732cdc2924e35
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.
@@ -124,7 +128,7 @@ make dmg
 
 If you build from an exFAT/FAT external disk, macOS can create `._*` AppleDouble files beside source and build files. The build removes them from the app bundle before signing. For a Git checkout already affected by such files, run `dot_clean -m .` from the repository root before using Git.
 
-The repository test suite covers default settings, profile snapshots, whitelist preservation, cancellation, single-pass preview behavior, mount-identity changes between cleanup categories, disk-image rejection, safe window close/reopen lifecycles, bundle signing, and plist validity. It uses disposable temporary fixtures; it never cleans a real mounted volume.
+The repository test suite covers default settings, profile snapshots, whitelist preservation, cancellation, single-pass preview behavior, mount-identity changes between cleanup categories, periodic scheduler consent and timer behavior, an end-to-end periodic cleanup on a disposable temporary fixture, disk-image rejection, safe window close/reopen lifecycles, bundle signing, and plist validity. It never cleans a real mounted volume.
 
 ## Manual end-to-end test
 
@@ -143,6 +147,10 @@ The public build is free and ad-hoc signed, not Apple-notarized. Verify the rele
 ### My drive does not appear
 
 DriveSweep intentionally refuses internal disks, disk images, network shares, read-only volumes, excluded names, and volumes that `diskutil` cannot identify as physical and external. Confirm the drive is writable and directly attached, then reconnect it. A permission or filesystem error appears in the Analyze report rather than being ignored.
+
+### How does periodic cleanup work?
+
+It is not enabled automatically. Turn on both **Pulisci automaticamente dopo il mount** and **Esegui la pulizia periodica**, choose the interval, then explicitly allow the exact drive from its card. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. Disable either switch to stop later automatic categories.
 
 ### I changed my mind while it is running
 

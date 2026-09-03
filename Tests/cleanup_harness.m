@@ -11,6 +11,10 @@
 @property(nonatomic, copy) NSDictionary<NSString *, id> *testDiskInfo;
 @property(nonatomic, copy) NSURL *capturedPreviewVolume;
 @property(nonatomic, copy) NSString *capturedPreviewIdentity;
+@property(nonatomic, copy) NSURL *capturedPeriodicVolume;
+@property(nonatomic, copy) NSString *capturedPeriodicIdentity;
+@property(nonatomic, copy) NSString *capturedPeriodicSource;
+@property(nonatomic) BOOL runActualPeriodicCleanup;
 @end
 
 @implementation TestDriveSweepController
@@ -34,6 +38,10 @@
     self.presentedAlertCount += 1;
 }
 
+- (void)notify:(NSString *)message {
+    (void)message;
+}
+
 - (void)showDashboard:(id)sender {
     self.dashboardPresentationCount += 1;
 }
@@ -43,6 +51,17 @@
     self.capturedPreviewIdentity = expectedMountIdentity;
 }
 
+- (void)cleanVolume:(NSURL *)volume source:(NSString *)source expectedMountIdentity:(NSString *)expectedMountIdentity completion:(void (^)(BOOL success))completion {
+    self.capturedPeriodicVolume = volume;
+    self.capturedPeriodicIdentity = expectedMountIdentity;
+    self.capturedPeriodicSource = source;
+    if (self.runActualPeriodicCleanup) {
+        [super cleanVolume:volume source:source expectedMountIdentity:expectedMountIdentity completion:completion];
+        return;
+    }
+    if (completion) completion(YES);
+}
+
 @end
 
 @interface DriveSweepController (DashboardLifecycleRegression)
@@ -50,6 +69,9 @@
 - (void)showPreferences:(id)sender;
 - (NSPopUpButton *)dashboardActionsButtonForVolume:(NSURL *)volume identity:(NSString *)identity enabled:(BOOL)enabled;
 - (void)previewFromMenu:(NSMenuItem *)sender;
+- (NSArray<DSVolumeTarget *> *)periodicCleanupTargets;
+- (void)runPeriodicCleanup:(NSTimer *)timer;
+- (void)configurePeriodicCleanupTimer;
 @end
 
 static BOOL DashboardReopenAfterCloseRegression(void) {
@@ -213,6 +235,60 @@ int main(void) {
         BOOL dashboardAnalyzeCapturesTarget =
             [controller.capturedPreviewVolume.path isEqualToString:volume.path] &&
             [controller.capturedPreviewIdentity isEqualToString:@"fixture-volume-uuid"];
+
+        NSString *periodicIdentity = @"periodic-fixture-uuid";
+        controller.eligibleVolumes = @[volume];
+        controller.eligibleVolumeIdentities = @{ volume.path: periodicIdentity };
+        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Fixture" excluded:NO allowAutomatic:YES];
+        [defaults setBool:YES forKey:DSAutomaticCleaning];
+        [defaults setBool:YES forKey:@"periodicCleaning"];
+        NSArray<DSVolumeTarget *> *periodicTargets = [controller periodicCleanupTargets];
+        BOOL periodicTargetsRequireConsent = periodicTargets.count == 1 &&
+            [periodicTargets.firstObject.volumeURL.path isEqualToString:volume.path] &&
+            [periodicTargets.firstObject.mountIdentity isEqualToString:periodicIdentity];
+        [defaults setBool:NO forKey:DSAutomaticCleaning];
+        BOOL periodicTargetsRequireMasterSwitch = [controller periodicCleanupTargets].count == 0;
+        [defaults setBool:YES forKey:DSAutomaticCleaning];
+        [controller runPeriodicCleanup:nil];
+        BOOL periodicRunUsesAuthorizedTarget =
+            [controller.capturedPeriodicVolume.path isEqualToString:volume.path] &&
+            [controller.capturedPeriodicIdentity isEqualToString:periodicIdentity] &&
+            [controller.capturedPeriodicSource isEqualToString:@"pulizia periodica"];
+        [controller configurePeriodicCleanupTimer];
+        BOOL periodicTimerEnabled = controller.periodicCleanupTimer != nil;
+        [defaults setBool:NO forKey:@"periodicCleaning"];
+        [controller configurePeriodicCleanupTimer];
+        BOOL periodicTimerDisabled = controller.periodicCleanupTimer == nil;
+        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Fixture" excluded:NO allowAutomatic:NO];
+
+        NSString *periodicRoot = [root stringByAppendingPathComponent:@"periodic-e2e"];
+        if (!CreateDirectory(manager, periodicRoot) ||
+            ![@"metadata" writeToFile:[periodicRoot stringByAppendingPathComponent:@".DS_Store"] atomically:YES encoding:NSUTF8StringEncoding error:nil] ||
+            ![@"sentinel" writeToFile:[periodicRoot stringByAppendingPathComponent:@"keep.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil]) return 1;
+        NSURL *periodicVolume = [NSURL fileURLWithPath:periodicRoot];
+        controller.cleanupQueue = dispatch_queue_create("com.github.naicud.drivesweep.periodic-test", DISPATCH_QUEUE_SERIAL);
+        controller.scheduledCleanupPaths = [NSMutableSet set];
+        controller.eligibleVolumes = @[periodicVolume];
+        controller.eligibleVolumeIdentities = @{ periodicVolume.path: periodicIdentity };
+        controller.testMountIdentity = periodicIdentity;
+        controller.mountIdentityChecks = 0;
+        controller.changeIdentityAfterChecks = NSUIntegerMax;
+        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Periodic fixture" excluded:NO allowAutomatic:YES];
+        for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:NO forKey:key];
+        [defaults setBool:YES forKey:DSDSStore];
+        [defaults setBool:YES forKey:DSAutomaticCleaning];
+        [defaults setBool:YES forKey:@"periodicCleaning"];
+        controller.runActualPeriodicCleanup = YES;
+        [controller runPeriodicCleanup:nil];
+        NSDate *periodicDeadline = [NSDate dateWithTimeIntervalSinceNow:3];
+        while ([manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@".DS_Store"]] && periodicDeadline.timeIntervalSinceNow > 0) {
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+        BOOL periodicEndToEndCleanup =
+            ![manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@".DS_Store"]] &&
+            [manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@"keep.txt"]];
+        controller.runActualPeriodicCleanup = NO;
+        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Periodic fixture" excluded:NO allowAutomatic:NO];
         [controller showPreviewReport:@{
             @"success": @YES,
             @"counts": @{},
@@ -344,6 +420,6 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         [manager removeItemAtPath:root error:nil];
-        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && dashboardAnalyzeCapturesTarget && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
+        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireConsent && periodicTargetsRequireMasterSwitch && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && periodicEndToEndCleanup && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
     }
 }

@@ -1,6 +1,6 @@
 # Installation
 
-DriveSweep is free and open source. The public `v0.4.4` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
+DriveSweep is free and open source. The public `v0.4.5` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
 
 Only trust a release downloaded from [the official DriveSweep GitHub releases page](https://github.com/naicud/drivesweep/releases), or build the public source yourself.
 
@@ -31,13 +31,13 @@ brew uninstall --cask drivesweep
 ## DMG
 
 1. Download `DriveSweep.dmg` from the official [releases page](https://github.com/naicud/drivesweep/releases).
-2. Verify the download before opening it. For `v0.4.4`:
+2. Verify the download before opening it. For `v0.4.5`:
 
    ```sh
    shasum -a 256 ~/Downloads/DriveSweep.dmg
    ```
 
-   The expected digest is `99bdb6ae7db5fed963506e15c2c4663e019d7fdf91f649096128b52038881cac`.
+   The expected digest is `8a516cd3325497eb8751bb4fb3fa842c6249fbbafb3943a6dbf732cdc2924e35`.
 3. Open the DMG and drag `DriveSweep.app` to `/Applications`.
 4. Use either one of these local launch choices:
 
