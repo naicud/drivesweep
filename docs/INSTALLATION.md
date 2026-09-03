@@ -1,6 +1,6 @@
 # Installation
 
-DriveSweep is free and open source. The public `v0.2.1` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
+DriveSweep is free and open source. The public `v0.2.2` app is ad-hoc signed, not Apple-notarized. The methods below let you run it locally without an Apple Developer subscription.
 
 Only trust a release downloaded from [the official DriveSweep GitHub releases page](https://github.com/naicud/drivesweep/releases), or build the public source yourself.
 
@@ -31,13 +31,13 @@ brew uninstall --cask drivesweep
 ## DMG
 
 1. Download `DriveSweep.dmg` from the official [releases page](https://github.com/naicud/drivesweep/releases).
-2. Verify the download before opening it. For `v0.2.1`:
+2. Verify the download before opening it. For `v0.2.2`:
 
    ```sh
    shasum -a 256 ~/Downloads/DriveSweep.dmg
    ```
 
-   The expected digest is `22d7d5870108d6bb296d1e9738fd11465bde8f710b731969d2bbb0a584cc3164`.
+   The expected digest is `09e91de9679695581de14521f0d4b20ee192f562a636deb5902979ec205c4d4a`.
 3. Open the DMG and drag `DriveSweep.app` to `/Applications`.
 4. Use either one of these local launch choices:
 
@@ -71,6 +71,6 @@ xcode-select --install
 
 ## First use
 
-When DriveSweep opens, its dashboard appears immediately and a broom icon stays in the menu bar. Automatic cleanup is off by default. If you enable it in Preferences, DriveSweep waits briefly after mount and cleans each stable eligible mount once. `.DS_Store` cleanup is enabled by default; AppleDouble and every additional metadata category are opt-in. Use **Clean and eject** only after file copying finishes, for a final cleanup pass.
+When DriveSweep opens, its dashboard appears immediately and a broom icon stays in the menu bar. Automatic cleanup is off by default. If you enable it in Preferences, DriveSweep waits briefly after mount and cleans each stable eligible mount once. `.DS_Store` and AppleDouble (`._*`) cleanup are enabled by default; every other metadata category is opt-in. Use **Clean and eject** only after file copying finishes, for a final cleanup pass.
 
 Use a disposable test USB drive first. DriveSweep deliberately ignores internal disks, disk images, network shares, read-only media, and names you exclude in Preferences.

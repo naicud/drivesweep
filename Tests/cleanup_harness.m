@@ -45,6 +45,9 @@ int main(void) {
         [@"sentinel" writeToFile:[nested stringByAppendingPathComponent:@".apdisk/keep.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSDictionary<NSString *, id> *registeredDefaults = DSDefaultPreferences();
+        if (![registeredDefaults[DSAppleDouble] boolValue] ||
+            [registeredDefaults[DSAutomaticCleaning] boolValue]) return 1;
         [defaults setBool:YES forKey:DSAppleDouble];
         [defaults setBool:YES forKey:DSDSStore];
         [defaults setBool:YES forKey:DSTrashes];

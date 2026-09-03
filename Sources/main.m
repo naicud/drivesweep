@@ -21,6 +21,25 @@ static NSString *const DSTemporaryItems = @"temporaryItems";
 static NSString *const DSAppleDoubleDirectories = @"appleDoubleDirectories";
 static NSString *const DSExcludedVolumes = @"excludedVolumes";
 
+static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
+    return @{
+        DSAutomaticCleaning: @NO,
+        DSAppleDouble: @YES,
+        DSAppleDoubleExtensions: @"",
+        DSDSStore: @YES,
+        DSTrashes: @NO,
+        DSSpotlight: @NO,
+        DSFileEvents: @NO,
+        DSApdisk: @NO,
+        DSVolumeIcon: @NO,
+        DSDesktopIni: @NO,
+        DSThumbsDb: @NO,
+        DSTemporaryItems: @NO,
+        DSAppleDoubleDirectories: @NO,
+        DSExcludedVolumes: @""
+    };
+}
+
 @interface DriveSweepController : NSObject <NSApplicationDelegate>
 @property (strong) NSStatusItem *statusItem;
 @property (strong) NSWindow *dashboardWindow;
@@ -37,22 +56,7 @@ static NSString *const DSExcludedVolumes = @"excludedVolumes";
 @implementation DriveSweepController
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-        DSAutomaticCleaning: @NO,
-        DSAppleDouble: @YES,
-        DSAppleDoubleExtensions: @"",
-        DSDSStore: @YES,
-        DSTrashes: @NO,
-        DSSpotlight: @NO,
-        DSFileEvents: @NO,
-        DSApdisk: @NO,
-        DSVolumeIcon: @NO,
-        DSDesktopIni: @NO,
-        DSThumbsDb: @NO,
-        DSTemporaryItems: @NO,
-        DSAppleDoubleDirectories: @NO,
-        DSExcludedVolumes: @""
-    }];
+    [[NSUserDefaults standardUserDefaults] registerDefaults:DSDefaultPreferences()];
 
     self.eligibleVolumes = @[];
     self.eligibleVolumeIdentities = @{};
