@@ -59,7 +59,7 @@ These boundaries reduce the chance of acting on the wrong target; they do not ma
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.4.9` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.4.10` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -91,10 +91,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.4.9`, the published SHA-256 is:
+For `v0.4.10`, the published SHA-256 is:
 
 ```text
-3a04405a16e143b18934151ede2f119b4de031078f9a643a75c2ffd29dcfdd1f
+c265e7cad468c183fe766c85a9b6a68cf5e648956f89c1e3f7dd79004c240782
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.
