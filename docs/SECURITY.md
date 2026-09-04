@@ -38,7 +38,7 @@ It does not touch the startup disk, disk images, network shares, read-only volum
 
 ## Target identity and filesystem boundaries
 
-An action keeps the selected mount URL together with its VolumeUUID. Before each destructive cleanup category, DriveSweep compares that UUID with the mounted target again. If the target changed, later categories are not run and the operation reports the identity failure. The same check occurs immediately before **Clean and eject** asks macOS to eject a device.
+An action keeps the selected mount URL together with its VolumeUUID; there is no fallback to a device-wide DiskUUID. Before each destructive cleanup category, DriveSweep compares that UUID with the mounted target again. An unmount of the active target also requests cancellation and invalidates custom-extension analysis consent for that UUID. If the target changed, later categories are not run and the operation reports the identity failure. The same check occurs immediately before **Clean and eject** asks macOS to eject a device.
 
 Traversal uses physical filesystem entries, does not follow symlinks, and does not cross into a different device. Before removing a matching item at a drive root, the app checks its final `lstat` type, rejects symlinks and special files, and requires it to belong to the source filesystem. This is defense in depth, not a substitute for backups: metadata cleanup is still deletion and cannot be undone by DriveSweep.
 
