@@ -2,7 +2,7 @@
 
 ## Current release status
 
-DriveSweep `v0.4.10` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
+DriveSweep `v0.4.11` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
 
 Apple notarization is a paid distribution service because it requires membership in the Apple Developer Program and a Developer ID certificate. There is no free setting that makes macOS show a third-party downloadable app as Apple-verified for every user.
 
@@ -16,10 +16,10 @@ These choices change local launch handling only. They do not mean that Apple has
 
 ## Verify a release
 
-The `v0.4.10` DMG SHA-256 is:
+The `v0.4.11` DMG SHA-256 is:
 
 ```text
-c265e7cad468c183fe766c85a9b6a68cf5e648956f89c1e3f7dd79004c240782
+c059f39fecd787e47cbb2ece6f647555ff6611e222f23fd1801bb41a29292d14
 ```
 
 Calculate it after downloading:
