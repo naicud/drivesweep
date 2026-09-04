@@ -1,8 +1,27 @@
-# DriveSweep
+<p align="center">
+  <img src="docs/assets/drivesweep-mark.png" width="176" alt="DriveSweep: an external drive and a digital broom" />
+</p>
 
-DriveSweep is a free, open-source macOS menu-bar app that keeps external drives clean before you share or eject them. It is an alternative to commercial metadata cleaners such as BlueHarvest: there are no subscriptions, analytics, or network calls.
+<h1 align="center">DriveSweep</h1>
 
-It deliberately touches only physical external, writable volumes. It ignores the startup disk, disk images, network shares, read-only volumes, and any volume whose name is listed in Preferences.
+<p align="center">
+  <strong>Clean external drives. Keep the guardrails.</strong><br />
+  A free, open-source macOS menu-bar utility for the metadata left behind when drives move between Macs, Windows, Linux, cameras, and NAS boxes.
+</p>
+
+<p align="center">
+  <code>macOS 13+</code>&nbsp;&nbsp;·&nbsp;&nbsp;<code>Apache-2.0</code>&nbsp;&nbsp;·&nbsp;&nbsp;<code>no analytics</code>&nbsp;&nbsp;·&nbsp;&nbsp;<code>no subscriptions</code>&nbsp;&nbsp;·&nbsp;&nbsp;<code>physical external volumes only</code>
+</p>
+
+![A silver external drive being cleaned by a digital broom on a dark developer desk.](docs/assets/drivesweep-hero.png)
+
+DriveSweep is an alternative to commercial metadata cleaners such as BlueHarvest. It deliberately touches only physical, writable external volumes: never the startup disk, disk images, network shares, or read-only media. Cleanup is deletion, so automation remains opt-in and bound to an exact `VolumeUUID`.
+
+```text
+external mount → identity verified → Analyze → explicit per-drive rule → serialized cleanup → optional eject
+```
+
+> The artwork above is an illustration of the project’s purpose, not a fabricated app screenshot. The real app stays deliberately plain: it shows its target, its current work, and its safety state.
 
 ## At a glance
 
@@ -13,6 +32,28 @@ It deliberately touches only physical external, writable volumes. It ignores the
 | Is background cleanup safe by default? | It is disabled. Mount-time cleanup and the scheduler each require a separate explicit rule for that exact VolumeUUID. |
 | What should I do first? | Use **Analyze**. It is non-destructive and reports candidates, whitelist exclusions, and filesystem errors. |
 | Can I undo a cleanup? | No. Treat cleanup as deletion; test first on a disposable drive and preserve needed AppleDouble extensions in the whitelist. |
+
+## The nerdy part: boringly explicit control
+
+DriveSweep is not a daemon that sees “USB” and starts deleting. It is a tiny policy engine with a visible control surface:
+
+```text
+                   ┌──────────────────────────────────┐
+   /Volumes/drive  │  physical + writable + VolumeUUID │
+          │        └────────────────┬─────────────────┘
+          │                         │ reject by default
+          ▼                         ▼
+      Analyze ──► per-category report ──► per-UUID consent ──► Cleanup queue
+                                                  │                  │
+                                      mount / periodic rules      one disk at a time
+                                                  │                  │
+                                                  └──── Dashboard ◄──┘
+```
+
+- **No silent trust:** drive names are presentation only. Persistent rules use the mounted volume’s UUID.
+- **No surprise scheduler:** the periodic runner is off by default, runs every 1 minute to 7 days, and shows the next run or why a tick was skipped.
+- **No magic “safe clean”:** the preview lists candidates before removal; AppleDouble has an extension whitelist; advanced categories start off.
+- **No fake progress:** DriveSweep shows category and location rather than inventing an unreliable percentage for a filesystem traversal.
 
 ## What it does
 
