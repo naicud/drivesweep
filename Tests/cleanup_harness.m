@@ -151,6 +151,8 @@ static BOOL CustomExtensionCleanupRegression(TestDriveSweepController *controlle
         id value = [defaults objectForKey:key];
         savedValues[key] = value ?: [NSNull null];
     }
+    id savedRules = [defaults objectForKey:@"volumeRules"] ?: [NSNull null];
+    BOOL savedPeriodicEnabled = [defaults boolForKey:@"periodicCleaning"];
 
     char template[] = "/private/tmp/drivesweep-custom.XXXXXX";
     char *temporaryPath = mkdtemp(template);
@@ -201,7 +203,17 @@ static BOOL CustomExtensionCleanupRegression(TestDriveSweepController *controlle
     NSDictionary<NSString *, id> *snapshot = [controller cleanupOptionsSnapshot];
     NSSet<NSString *> *snapshotExtensions = snapshot[customExtensionsKey];
     BOOL snapshotIsImmutable = [snapshotExtensions isEqualToSet:[NSSet setWithObjects:@"tmp", @"bak", nil]];
+    NSString *customIdentity = @"custom-extension-fixture-uuid";
+    controller.eligibleVolumes = @[[NSURL fileURLWithPath:root]];
+    controller.eligibleVolumeIdentities = @{ root: customIdentity };
+    [controller setPeriodicCleaning:YES forIdentity:customIdentity name:@"Custom fixture"];
+    [defaults setBool:YES forKey:@"periodicCleaning"];
+    BOOL periodicRequiresCustomConfirmation = [controller periodicCleanupTargets].count == 0;
+    [controller recordCustomExtensionAnalysisForIdentity:customIdentity options:snapshot];
+    BOOL confirmationAccepted = [controller confirmCurrentCustomExtensionsForIdentity:customIdentity name:@"Custom fixture"];
+    BOOL periodicUsesConfirmedCustomRules = [controller periodicCleanupTargets].count == 1;
     [defaults setObject:@[@"txt"] forKey:customExtensionsKey];
+    BOOL changingExtensionsInvalidatesPeriodicConsent = [controller periodicCleanupTargets].count == 0;
 
     NSDictionary<NSString *, id> *preview = [controller previewVolumeOnWorker:[NSURL fileURLWithPath:root] expectedMountIdentity:nil options:snapshot];
     NSUInteger previewCount = [preview[@"counts"][customFilesKey] unsignedIntegerValue];
@@ -226,7 +238,10 @@ static BOOL CustomExtensionCleanupRegression(TestDriveSweepController *controlle
         if (value == [NSNull null]) [defaults removeObjectForKey:key];
         else [defaults setObject:value forKey:key];
     }
-    return validated && snapshotIsImmutable && previewIsSafe && cleanupIsSafe;
+    if (savedRules == [NSNull null]) [defaults removeObjectForKey:@"volumeRules"];
+    else [defaults setObject:savedRules forKey:@"volumeRules"];
+    [defaults setBool:savedPeriodicEnabled forKey:@"periodicCleaning"];
+    return validated && snapshotIsImmutable && periodicRequiresCustomConfirmation && confirmationAccepted && periodicUsesConfirmedCustomRules && changingExtensionsInvalidatesPeriodicConsent && previewIsSafe && cleanupIsSafe;
 }
 
 int main(void) {

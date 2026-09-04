@@ -32,7 +32,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 
 Automatic cleanup is **off by default**. It never runs merely because a drive is external: you must enable the global automatic-cleanup preference **and** explicitly allow automatic cleaning for that drive's stable VolumeUUID in its dashboard card. DriveSweep waits briefly after mount, rechecks the identity and consent, then cleans the approved mount once. When you finish copying, use **Clean and eject** for a final pass.
 
-Periodic cleanup is a separate, opt-in setting in **Preferences**. It does not require mount-time cleanup to be enabled. Choose an interval in minutes, add only the intended drives with **Includi nella pianificazione** in the card’s Actions menu, then use **Avvia pianificazione** from the dashboard or menu bar. It starts one background pass shortly after launch and repeats at that interval. It uses per-drive UUID consent, exclusion, mount-identity, and cancellation checks; it never ejects a disk. Stop it before copying files to a drive.
+Periodic cleanup is a separate, opt-in setting in **Preferences**. It does not require mount-time cleanup to be enabled. Choose an interval in minutes, add only the intended drives with **Includi nella pianificazione** in the card’s Actions menu, then use **Avvia pianificazione** from the dashboard or menu bar. If exact custom extensions are enabled, first run **Analyze** on that drive and choose **Conferma file personalizzati dopo analisi**; changing the extension list invalidates that consent. It starts one background pass shortly after launch and repeats at that interval. It uses per-drive UUID consent, exclusion, mount-identity, and cancellation checks; it never ejects a disk. Stop it before copying files to a drive.
 
 Analyze is always non-destructive: it reports candidates by category, AppleDouble files protected by the whitelist, and scan errors before you choose a cleanup action. Removing `._*` files may discard macOS-only metadata such as custom icons or legacy resource forks. The default **Cross-platform sharing** profile enables AppleDouble and `.DS_Store`; **Preserve Mac metadata** removes only `.DS_Store`; **Custom** preserves your individual toggles. All advanced categories require an explicit opt-in. Use the AppleDouble extension whitelist for types whose resource metadata must be preserved.
 
@@ -53,11 +53,11 @@ These boundaries reduce the chance of acting on the wrong target; they do not ma
 3. If AppleDouble metadata matters for a format, add its extension to the whitelist in **Preferences** and analyze again.
 4. Choose **Clean now** only after confirming the report, or choose **Clean and eject** after the last file copy.
 5. Keep automatic cleanup off unless you have tested the exact drive. If you enable it, allow it separately on that drive's dashboard card.
-6. To use periodic cleanup, enter the interval in minutes in **Preferences**, choose **Includi nella pianificazione** on the intended drive’s Actions menu, then start it from the dashboard or menu bar. The broom icon states whether it is active and exposes an immediate one-pass action.
+6. To use periodic cleanup, enter the interval in minutes in **Preferences**, choose **Includi nella pianificazione** on the intended drive’s Actions menu, and—if custom extensions are enabled—Analyze then confirm them for that drive. Start it from the dashboard or menu bar. The broom icon states whether it is active and exposes an immediate one-pass action.
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.4.6` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.4.7` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -89,10 +89,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.4.6`, the published SHA-256 is:
+For `v0.4.7`, the published SHA-256 is:
 
 ```text
-07be0521e0409a4822b775227916838e055d590e534eb4cb21e73d9850afa8f8
+5edbd8b7ccb2cc6e80e21c096f98bc37d3ade018082a3cbc65f3e7a0a08ae21e
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.

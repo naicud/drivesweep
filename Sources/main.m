@@ -32,6 +32,7 @@ static NSString *const DSProfileCustom = @"custom";
 static NSString *const DSVolumeRuleExcluded = @"excluded";
 static NSString *const DSVolumeRuleAutomatic = @"allowAutomatic";
 static NSString *const DSVolumeRulePeriodic = @"allowPeriodic";
+static NSString *const DSVolumeRuleCustomExtensionsFingerprint = @"customExtensionsFingerprint";
 static NSString *const DSVolumeRuleName = @"name";
 static NSUInteger DSPreviewFileTraversalCount = 0;
 
@@ -169,6 +170,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSMutableDictionary<NSString *, DSVolumeTarget *> *dashboardVolumeTargets;
 @property (strong) NSMutableDictionary<NSString *, NSButton *> *preferenceCheckboxes;
 @property (strong) NSMutableDictionary<NSString *, NSTextField *> *preferenceTextFields;
+@property (strong) NSMutableDictionary<NSString *, NSString *> *lastCustomAnalysisFingerprints;
 @property (nonatomic, copy) NSString *dashboardStatusMessage;
 @property (strong) DSOperationState *activeOperation;
 @property (strong) NSTextField *operationStatusLabel;
@@ -183,6 +185,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (BOOL)allowsPeriodicCleaningForIdentity:(NSString *)identity;
 - (void)setVolumeRuleForIdentity:(NSString *)identity name:(NSString *)name excluded:(BOOL)excluded allowAutomatic:(BOOL)allowAutomatic;
 - (void)setPeriodicCleaning:(BOOL)allowed forIdentity:(NSString *)identity name:(NSString *)name;
+- (NSString *)customExtensionsFingerprintForOptions:(NSDictionary<NSString *, id> *)options;
+- (void)recordCustomExtensionAnalysisForIdentity:(NSString *)identity options:(NSDictionary<NSString *, id> *)options;
+- (BOOL)confirmCurrentCustomExtensionsForIdentity:(NSString *)identity name:(NSString *)name;
 @end
 
 @implementation DriveSweepController
@@ -271,11 +276,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (NSArray<DSVolumeTarget *> *)periodicCleanupTargets {
     if (![self periodicCleanupIsEnabled] || self.activeOperation) return @[];
+    NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
     NSMutableArray<DSVolumeTarget *> *targets = [NSMutableArray array];
     for (NSURL *url in self.eligibleVolumes) {
         NSString *identity = self.eligibleVolumeIdentities[url.path];
         if (!identity.length || [self.scheduledCleanupPaths containsObject:url.path]) continue;
-        if ([self isVolumeExcludedForIdentity:identity] || ![self allowsPeriodicCleaningForIdentity:identity]) continue;
+        if ([self isVolumeExcludedForIdentity:identity] || ![self allowsPeriodicCleaningForIdentity:identity] || ![self customExtensionsAreConfirmedForIdentity:identity options:options]) continue;
         [targets addObject:[[DSVolumeTarget alloc] initWithVolumeURL:url mountIdentity:identity]];
     }
     return targets.copy;
@@ -309,6 +315,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     self.dashboardVolumeTargets = [NSMutableDictionary dictionary];
     self.preferenceCheckboxes = [NSMutableDictionary dictionary];
     self.preferenceTextFields = [NSMutableDictionary dictionary];
+    self.lastCustomAnalysisFingerprints = [NSMutableDictionary dictionary];
     self.cleanupQueue = dispatch_queue_create("com.github.naicud.drivesweep.cleanup", DISPATCH_QUEUE_SERIAL);
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     NSImage *menuIcon = [NSImage imageWithSystemSymbolName:@"broom.fill" accessibilityDescription:@"DriveSweep"];
@@ -468,6 +475,40 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (BOOL)allowsPeriodicCleaningForIdentity:(NSString *)identity {
     return identity.length && [[self volumeRuleForIdentity:identity][DSVolumeRulePeriodic] boolValue] && ![self isVolumeExcludedForIdentity:identity];
+}
+
+- (NSString *)customExtensionsFingerprintForOptions:(NSDictionary<NSString *, id> *)options {
+    if (![self cleanupOption:DSCustomFiles isEnabledInOptions:options]) return @"";
+    NSArray<NSString *> *extensions = [[options[DSCustomFileExtensions] allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    return [extensions componentsJoinedByString:@"\n"];
+}
+
+- (BOOL)customExtensionsAreConfirmedForIdentity:(NSString *)identity options:(NSDictionary<NSString *, id> *)options {
+    NSString *fingerprint = [self customExtensionsFingerprintForOptions:options];
+    if (!fingerprint.length) return YES;
+    return identity.length && [[self volumeRuleForIdentity:identity][DSVolumeRuleCustomExtensionsFingerprint] isEqualToString:fingerprint];
+}
+
+- (void)recordCustomExtensionAnalysisForIdentity:(NSString *)identity options:(NSDictionary<NSString *, id> *)options {
+    NSString *fingerprint = [self customExtensionsFingerprintForOptions:options];
+    if (identity.length && fingerprint.length) {
+        if (!self.lastCustomAnalysisFingerprints) self.lastCustomAnalysisFingerprints = [NSMutableDictionary dictionary];
+        self.lastCustomAnalysisFingerprints[identity] = fingerprint;
+    }
+}
+
+- (BOOL)confirmCurrentCustomExtensionsForIdentity:(NSString *)identity name:(NSString *)name {
+    NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
+    NSString *fingerprint = [self customExtensionsFingerprintForOptions:options];
+    if (!identity.length || !fingerprint.length || ![self.lastCustomAnalysisFingerprints[identity] isEqualToString:fingerprint]) return NO;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *rules = [[self volumeRules] mutableCopy];
+    NSMutableDictionary *rule = [[self volumeRuleForIdentity:identity] mutableCopy];
+    rule[DSVolumeRuleName] = name ?: @"";
+    rule[DSVolumeRuleCustomExtensionsFingerprint] = fingerprint;
+    rules[identity] = rule.copy;
+    [defaults setObject:rules.copy forKey:DSVolumeRules];
+    return YES;
 }
 
 - (void)setVolumeRuleForIdentity:(NSString *)identity name:(NSString *)name excluded:(BOOL)excluded allowAutomatic:(BOOL)allowAutomatic {
@@ -1396,6 +1437,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         NSDictionary<NSString *, id> *report = [self previewVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity options:options operation:operation];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self finishOperation:operation result:report];
+            if ([report[@"success"] boolValue]) [self recordCustomExtensionAnalysisForIdentity:expectedMountIdentity options:options];
             [self showPreviewReport:report options:options volume:volume];
         });
     });
@@ -1600,6 +1642,19 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [self rebuildMenu];
 }
 
+- (void)confirmCustomExtensionsFromMenu:(NSMenuItem *)sender {
+    DSVolumeTarget *target = sender.representedObject;
+    if (!target.mountIdentity.length) return;
+    if ([self confirmCurrentCustomExtensionsForIdentity:target.mountIdentity name:target.volumeURL.lastPathComponent]) {
+        [self setDashboardStatusMessage:[NSString stringWithFormat:@"Regole file personalizzate confermate per %@.", target.volumeURL.lastPathComponent]];
+        [self notify:@"Regole file personalizzate confermate per la pianificazione."];
+    } else {
+        [self setDashboardStatusMessage:@"Analizza prima il disco con le estensioni correnti, poi conferma le regole per la pianificazione."];
+        [self notify:@"Conferma non disponibile: analizza prima il disco con le estensioni correnti."];
+    }
+    [self rebuildMenu];
+}
+
 - (void)cleanAndEject:(NSMenuItem *)sender {
     DSVolumeTarget *target = sender.representedObject;
     [self cleanVolume:target.volumeURL source:@"prima dell'espulsione" expectedMountIdentity:target.mountIdentity completion:^(BOOL success) {
@@ -1731,6 +1786,11 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMenuItem *periodic = [[NSMenuItem alloc] initWithTitle:([self allowsPeriodicCleaningForIdentity:identity] ? @"Rimuovi dalla pianificazione" : @"Includi nella pianificazione") action:@selector(toggleVolumeRuleFromMenu:) keyEquivalent:@""];
     periodic.target = self; periodic.representedObject = target; periodic.identifier = identity ?: @""; periodic.tag = 3; periodic.enabled = identity.length > 0 && !excluded;
     [menu addItem:periodic];
+    if ([[self cleanupOptionsSnapshot][DSCustomFiles] boolValue]) {
+        NSMenuItem *confirmCustom = [[NSMenuItem alloc] initWithTitle:@"Conferma file personalizzati dopo analisi" action:@selector(confirmCustomExtensionsFromMenu:) keyEquivalent:@""];
+        confirmCustom.target = self; confirmCustom.representedObject = target; confirmCustom.enabled = identity.length > 0 && !excluded;
+        [menu addItem:confirmCustom];
+    }
     NSMenuItem *title = [[NSMenuItem alloc] initWithTitle:@"Azioni…" action:nil keyEquivalent:@""];
     title.enabled = NO;
     [menu insertItem:title atIndex:0];
