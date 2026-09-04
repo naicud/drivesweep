@@ -15,6 +15,9 @@
 @property(nonatomic, copy) NSString *capturedPeriodicIdentity;
 @property(nonatomic, copy) NSString *capturedPeriodicSource;
 @property(nonatomic) BOOL runActualPeriodicCleanup;
+@property(nonatomic) UNAuthorizationStatus testNotificationAuthorizationStatus;
+@property(nonatomic) NSUInteger notificationAuthorizationStatusQueryCount;
+@property(nonatomic) NSUInteger notificationAuthorizationRequestCount;
 @end
 
 @implementation TestDriveSweepController
@@ -40,6 +43,17 @@
 
 - (void)notify:(NSString *)message {
     (void)message;
+}
+
+- (void)notificationAuthorizationStatusWithCompletionHandler:(void (^)(UNAuthorizationStatus status))completionHandler {
+    self.notificationAuthorizationStatusQueryCount += 1;
+    if (completionHandler) completionHandler(self.testNotificationAuthorizationStatus);
+}
+
+- (void)requestNotificationAuthorizationWithOptions:(UNAuthorizationOptions)options completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
+    (void)options;
+    self.notificationAuthorizationRequestCount += 1;
+    if (completionHandler) completionHandler(YES, nil);
 }
 
 - (void)showDashboard:(id)sender {
@@ -89,6 +103,38 @@
 - (NSString *)mountIdentityFromDiskInfo:(NSDictionary *)info;
 - (void)handleUnmountedVolumeURL:(NSURL *)url;
 @end
+
+static BOOL NotificationAuthorizationLaunchRegression(TestDriveSweepController *controller, NSUserDefaults *defaults) {
+    id savedSentinel = [defaults objectForKey:DSNotificationAuthorizationRequested];
+    [defaults removeObjectForKey:DSNotificationAuthorizationRequested];
+    controller.notificationAuthorizationRequestCount = 0;
+    controller.notificationAuthorizationStatusQueryCount = 0;
+    controller.testNotificationAuthorizationStatus = UNAuthorizationStatusNotDetermined;
+
+    [controller requestNotificationAuthorizationAtLaunch];
+    BOOL undeterminedRequestsOnce = controller.notificationAuthorizationRequestCount == 1 &&
+        [defaults boolForKey:DSNotificationAuthorizationRequested];
+    [controller requestNotificationAuthorizationAtLaunch];
+    BOOL persistedSentinelPreventsRepeat = controller.notificationAuthorizationRequestCount == 1;
+
+    [defaults removeObjectForKey:DSNotificationAuthorizationRequested];
+    controller.testNotificationAuthorizationStatus = UNAuthorizationStatusDenied;
+    [controller requestNotificationAuthorizationAtLaunch];
+    [controller requestNotificationAuthorizationAtLaunch];
+    BOOL deniedDoesNotPromptOrWriteSentinel = controller.notificationAuthorizationRequestCount == 1 &&
+        ![defaults boolForKey:DSNotificationAuthorizationRequested];
+
+    controller.testNotificationAuthorizationStatus = UNAuthorizationStatusAuthorized;
+    [controller requestNotificationAuthorizationAtLaunch];
+    BOOL authorizedDoesNotPrompt = controller.notificationAuthorizationRequestCount == 1 &&
+        ![defaults boolForKey:DSNotificationAuthorizationRequested];
+
+    if (savedSentinel) [defaults setObject:savedSentinel forKey:DSNotificationAuthorizationRequested];
+    else [defaults removeObjectForKey:DSNotificationAuthorizationRequested];
+    return undeterminedRequestsOnce && persistedSentinelPreventsRepeat &&
+        deniedDoesNotPromptOrWriteSentinel && authorizedDoesNotPrompt &&
+        controller.notificationAuthorizationStatusQueryCount == 5;
+}
 
 static BOOL DashboardReopenAfterCloseRegression(void) {
     NSApplication *application = [NSApplication sharedApplication];
@@ -479,6 +525,7 @@ int main(void) {
             [registeredDefaults[DSCustomFiles] boolValue] ||
             [registeredDefaults[DSCustomFileExtensions] count] != 0) return 1;
         TestDriveSweepController *controller = [[TestDriveSweepController alloc] init];
+        BOOL notificationAuthorizationLaunch = NotificationAuthorizationLaunchRegression(controller, defaults);
         controller.testDiskInfo = @{
             @"Internal": @NO,
             @"RemovableMediaOrExternalDevice": @YES,
@@ -519,8 +566,10 @@ int main(void) {
         [defaults setObject:@"minutes" forKey:@"periodicCleaningIntervalUnit"];
         [defaults setInteger:900 forKey:@"periodicCleaningInterval"];
         BOOL preservesModernMinuteInterval = [controller periodicCleanupIntervalMinutes] == 900;
-        [defaults setInteger:2 forKey:@"periodicCleaningInterval"];
-        BOOL clampsShortPeriodicInterval = [controller periodicCleanupIntervalMinutes] == 5;
+        [defaults setInteger:-1 forKey:@"periodicCleaningInterval"];
+        BOOL clampsShortPeriodicInterval = [controller periodicCleanupIntervalMinutes] == 1;
+        [defaults setInteger:1 forKey:@"periodicCleaningInterval"];
+        BOOL acceptsOneMinutePeriodicInterval = [controller periodicCleanupIntervalMinutes] == 1 && [controller periodicCleanupInterval] == 60;
         [defaults setInteger:7 * 24 * 60 * 60 forKey:@"periodicCleaningInterval"];
         BOOL clampsLongPeriodicInterval = [controller periodicCleanupIntervalMinutes] == 10080;
         [defaults setInteger:60 forKey:@"periodicCleaningInterval"];
@@ -662,6 +711,69 @@ int main(void) {
         BOOL periodicEndToEndCleanup =
             ![manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@".DS_Store"]] &&
             [manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@"keep.txt"]];
+
+        /*
+         * A scheduled run is serialized across selected disks.  Exercise the
+         * real worker/completion path with two fixtures so the next target is
+         * not attempted while the previous DSOperationState is still active.
+         * This intentionally runs only under /private/tmp.
+         */
+        NSString *periodicSecondRoot = [root stringByAppendingPathComponent:@"periodic-e2e-second"];
+        if (!CreateDirectory(manager, periodicSecondRoot) ||
+            ![@"metadata" writeToFile:[periodicSecondRoot stringByAppendingPathComponent:@".DS_Store"] atomically:YES encoding:NSUTF8StringEncoding error:nil] ||
+            ![@"sentinel" writeToFile:[periodicSecondRoot stringByAppendingPathComponent:@"keep.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil]) return 1;
+        NSURL *periodicSecondVolume = [NSURL fileURLWithPath:periodicSecondRoot];
+        controller.activeOperation = nil;
+        controller.scheduledCleanupPaths = [NSMutableSet set];
+        controller.eligibleVolumes = @[periodicVolume, periodicSecondVolume];
+        controller.eligibleVolumeIdentities = @{ periodicVolume.path: periodicIdentity, periodicSecondVolume.path: periodicIdentity };
+        controller.mountIdentityChecks = 0;
+        [controller runPeriodicCleanup:nil];
+        NSDate *multiVolumeDeadline = [NSDate dateWithTimeIntervalSinceNow:3];
+        while (([manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@".DS_Store"]] ||
+                 [manager fileExistsAtPath:[periodicSecondRoot stringByAppendingPathComponent:@".DS_Store"]]) &&
+               multiVolumeDeadline.timeIntervalSinceNow > 0) {
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+        BOOL periodicCleansAllSelectedVolumes =
+            ![manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@".DS_Store"]] &&
+            ![manager fileExistsAtPath:[periodicSecondRoot stringByAppendingPathComponent:@".DS_Store"]] &&
+            [manager fileExistsAtPath:[periodicSecondRoot stringByAppendingPathComponent:@"keep.txt"]];
+
+        /* Exercise the actual NSTimer -> main run loop -> selector path. */
+        [@"metadata" writeToFile:[periodicSecondRoot stringByAppendingPathComponent:@".DS_Store"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        controller.activeOperation = nil;
+        controller.scheduledCleanupPaths = [NSMutableSet set];
+        controller.eligibleVolumes = @[periodicSecondVolume];
+        controller.eligibleVolumeIdentities = @{ periodicSecondVolume.path: periodicIdentity };
+        [controller.periodicCleanupTimer invalidate];
+        controller.periodicCleanupTimer = [NSTimer scheduledTimerWithTimeInterval:0.02
+            target:controller selector:@selector(runPeriodicCleanup:) userInfo:nil repeats:NO];
+        [[NSRunLoop mainRunLoop] addTimer:controller.periodicCleanupTimer forMode:NSRunLoopCommonModes];
+        NSDate *timerDeadline = [NSDate dateWithTimeIntervalSinceNow:3];
+        while ([manager fileExistsAtPath:[periodicSecondRoot stringByAppendingPathComponent:@".DS_Store"]] && timerDeadline.timeIntervalSinceNow > 0) {
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+        BOOL periodicNSTimerE2E =
+            ![manager fileExistsAtPath:[periodicSecondRoot stringByAppendingPathComponent:@".DS_Store"]] &&
+            [manager fileExistsAtPath:[periodicSecondRoot stringByAppendingPathComponent:@"keep.txt"]];
+
+        /* A valid tick with no selected target must leave an observable status. */
+        [controller.periodicCleanupTimer invalidate];
+        controller.activeOperation = nil;
+        controller.eligibleVolumes = @[periodicSecondVolume];
+        controller.eligibleVolumeIdentities = @{ periodicSecondVolume.path: periodicIdentity };
+        [controller setPeriodicCleaning:NO forIdentity:periodicIdentity name:@"Periodic fixture"];
+        [defaults setBool:YES forKey:@"periodicCleaning"];
+        controller.periodicCleanupTimer = [NSTimer scheduledTimerWithTimeInterval:0.02
+            target:controller selector:@selector(runPeriodicCleanup:) userInfo:nil repeats:NO];
+        [[NSRunLoop mainRunLoop] addTimer:controller.periodicCleanupTimer forMode:NSRunLoopCommonModes];
+        NSDate *noTargetDeadline = [NSDate dateWithTimeIntervalSinceNow:1];
+        while (controller.periodicCleanupTimer.isValid && noTargetDeadline.timeIntervalSinceNow > 0) {
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+        BOOL noTargetTickIsVisible = [controller.dashboardStatusMessage containsString:@"nessun disco autorizzato o disponibile"];
+        [controller setPeriodicCleaning:YES forIdentity:periodicIdentity name:@"Periodic fixture"];
         controller.runActualPeriodicCleanup = NO;
         [controller setPeriodicCleaning:NO forIdentity:periodicIdentity name:@"Periodic fixture"];
         [controller showPreviewReport:@{
@@ -797,6 +909,6 @@ int main(void) {
         BOOL customExtensionCleanup = CustomExtensionCleanupRegression(controller, defaults);
         BOOL mountIdentitySafety = MountIdentitySafetyRegression(controller, defaults);
         [manager removeItemAtPath:root error:nil];
-        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && migratesLegacyPeriodicSeconds && preservesModernMinuteInterval && clampsShortPeriodicInterval && clampsLongPeriodicInterval && configuredScheduleUsesChosenInterval && resourceGuardThresholds && resourceGuardSuspendsScheduler && resourceWarningSurvivesCancellation && resourceGuardCanResume && customExtensionsRemainEditable && customExtensionsCommitOnSave && orphanedResourceMonitorIsStopped && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireSeparateConsent && periodicTargetsRequirePerDiskSelection && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && countdownTimerStopsOnTermination && periodicEndToEndCleanup && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse && customExtensionCleanup && mountIdentitySafety ? 0 : 1;
+        return notificationAuthorizationLaunch && rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && migratesLegacyPeriodicSeconds && preservesModernMinuteInterval && clampsShortPeriodicInterval && acceptsOneMinutePeriodicInterval && clampsLongPeriodicInterval && configuredScheduleUsesChosenInterval && resourceGuardThresholds && resourceGuardSuspendsScheduler && resourceWarningSurvivesCancellation && resourceGuardCanResume && customExtensionsRemainEditable && customExtensionsCommitOnSave && orphanedResourceMonitorIsStopped && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireSeparateConsent && periodicTargetsRequirePerDiskSelection && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && countdownTimerStopsOnTermination && periodicEndToEndCleanup && periodicCleansAllSelectedVolumes && periodicNSTimerE2E && noTargetTickIsVisible && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse && customExtensionCleanup && mountIdentitySafety ? 0 : 1;
     }
 }

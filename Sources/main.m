@@ -40,9 +40,12 @@ static NSString *const DSVolumeRuleAutomatic = @"allowAutomatic";
 static NSString *const DSVolumeRulePeriodic = @"allowPeriodic";
 static NSString *const DSVolumeRuleCustomExtensionsFingerprint = @"customExtensionsFingerprint";
 static NSString *const DSVolumeRuleName = @"name";
+static NSString *const DSNotificationAuthorizationRequested = @"notificationAuthorizationRequested";
 static NSUInteger DSPreviewFileTraversalCount = 0;
 static const double DSResourceGuardMaximumCPUPercent = 80.0;
 static const uint64_t DSResourceGuardMaximumResidentBytes = 750ULL * 1024ULL * 1024ULL;
+static const NSInteger DSMinimumPeriodicCleanupIntervalMinutes = 1;
+static const NSInteger DSMaximumPeriodicCleanupIntervalMinutes = 7 * 24 * 60;
 
 static NSArray<NSString *> *DSCleanupPreferenceKeys(void) {
     return @[
@@ -229,6 +232,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)suspendPeriodicCleanupForResourceGuardWithWarning:(NSString *)warning;
 - (void)configurePeriodicCleanupWithMinutes:(NSInteger)minutes;
 - (NSString *)nextPeriodicCleanupLabelAtDate:(NSDate *)date;
+- (void)requestNotificationAuthorizationAtLaunch;
+- (void)notificationAuthorizationStatusWithCompletionHandler:(void (^)(UNAuthorizationStatus status))completionHandler;
+- (void)requestNotificationAuthorizationWithOptions:(UNAuthorizationOptions)options completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler;
 @end
 
 @implementation DriveSweepController
@@ -286,7 +292,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [defaults setInteger:minutes forKey:DSPeriodicCleaningInterval];
         [defaults setObject:DSPeriodicCleaningIntervalUnitMinutes forKey:DSPeriodicCleaningIntervalUnit];
     }
-    return MAX(5, MIN(minutes ?: 60, 10080));
+    return MAX(DSMinimumPeriodicCleanupIntervalMinutes, MIN(minutes ?: 60, DSMaximumPeriodicCleanupIntervalMinutes));
 }
 
 - (NSTimeInterval)periodicCleanupInterval {
@@ -342,7 +348,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (void)configurePeriodicCleanupWithMinutes:(NSInteger)minutes {
-    NSInteger clampedMinutes = MAX(5, MIN(minutes ?: 60, 10080));
+    NSInteger clampedMinutes = MAX(DSMinimumPeriodicCleanupIntervalMinutes, MIN(minutes ?: 60, DSMaximumPeriodicCleanupIntervalMinutes));
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     self.periodicCleanupSuspendedByResourceGuard = NO;
     [defaults setInteger:clampedMinutes forKey:DSPeriodicCleaningInterval];
@@ -486,7 +492,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     minutes.identifier = @"scheduleConfigurationInterval";
     minutes.accessibilityLabel = @"Intervallo pianificazione in minuti";
     [accessory addSubview:minutes];
-    NSTextField *hint = [NSTextField labelWithString:@"Da 5 a 10.080 minuti · il countdown sarà visibile in Dashboard."];
+    NSTextField *hint = [NSTextField labelWithString:@"Da 1 a 10.080 minuti · il countdown sarà visibile in Dashboard."];
     hint.frame = NSMakeRect(0, 2, 360, 18);
     hint.font = [NSFont systemFontOfSize:11];
     hint.textColor = NSColor.secondaryLabelColor;
@@ -516,7 +522,50 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [self updateScheduleCountdown:nil];
     }
     NSArray<DSVolumeTarget *> *targets = [self periodicCleanupTargets];
-    if (targets.count) [self cleanNextPeriodicTarget:targets index:0];
+    if (!targets.count) {
+        NSString *message = self.activeOperation
+            ? [NSString stringWithFormat:@"Pianificazione saltata: %@ è ancora in corso.", self.activeOperation.volumeName]
+            : @"Pianificazione eseguita: nessun disco autorizzato o disponibile.";
+        [self setDashboardStatusMessage:message];
+        self.statusItem.button.toolTip = message;
+        [self rebuildMenu];
+        return;
+    }
+    [self cleanNextPeriodicTarget:targets index:0];
+}
+
+- (void)notificationAuthorizationStatusWithCompletionHandler:(void (^)(UNAuthorizationStatus status))completionHandler {
+    [[UNUserNotificationCenter currentNotificationCenter]
+        getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+            if (completionHandler) completionHandler(settings.authorizationStatus);
+        }];
+}
+
+- (void)requestNotificationAuthorizationWithOptions:(UNAuthorizationOptions)options completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
+    [[UNUserNotificationCenter currentNotificationCenter]
+        requestAuthorizationWithOptions:options completionHandler:completionHandler];
+}
+
+- (void)requestNotificationAuthorizationAtLaunch {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [self notificationAuthorizationStatusWithCompletionHandler:^(UNAuthorizationStatus status) {
+        /*
+         * Only an undetermined status can display Apple's permission prompt.
+         * Denied (including policy-restricted environments) and every already
+         * resolved status must be a no-op, so launching DriveSweep cannot
+         * repeatedly nag the user.  The persisted sentinel is checked only
+         * after that status gate and is written immediately after the actual
+         * request call is made.
+         */
+        if (status != UNAuthorizationStatusNotDetermined ||
+            [defaults boolForKey:DSNotificationAuthorizationRequested]) return;
+        [self requestNotificationAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+            completionHandler:^(BOOL granted, NSError *error) {
+                (void)granted;
+                (void)error;
+            }];
+        [defaults setBool:YES forKey:DSNotificationAuthorizationRequested];
+    }];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -539,12 +588,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     self.statusItem.button.toolTip = @"DriveSweep — pulisci dischi esterni";
     if (!menuIcon) self.statusItem.button.title = @"DS";
     [self rebuildMenu];
-    [[UNUserNotificationCenter currentNotificationCenter]
-        requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-        completionHandler:^(BOOL granted, NSError *error) {
-            (void)granted;
-            (void)error;
-        }];
+    [self requestNotificationAuthorizationAtLaunch];
 
     NSNotificationCenter *workspaceCenter = [[NSWorkspace sharedWorkspace] notificationCenter];
     [workspaceCenter addObserver:self selector:@selector(volumeMounted:) name:NSWorkspaceDidMountNotification object:nil];
@@ -1629,8 +1673,19 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
             self.statusItem.button.toolTip = message;
             if (!success || ![source isEqualToString:@"controllo automatico"]) [self notify:message];
             [self rebuildMenu];
-            if (completion) completion(success);
-            [self finishOperation:operation result:result];
+            if (periodicAutomatic && completion) {
+                /*
+                 * finishOperation enqueues its UI cleanup on the main queue.
+                 * Keep that block ahead of a periodic chain continuation so
+                 * the next selected volume cannot observe the previous
+                 * operation as still active and get skipped by cleanVolume:.
+                 */
+                [self finishOperation:operation result:result];
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(success); });
+            } else {
+                if (completion) completion(success);
+                [self finishOperation:operation result:result];
+            }
         });
     });
 }
@@ -2296,7 +2351,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [document addSubview:[self preferenceSection:@"Pulizia periodica in background" y:1034]];
         [document addSubview:[self checkbox:@"Esegui la pulizia periodica" key:DSPeriodicCleaning y:1062]];
         [document addSubview:[self preferenceLabel:@"È indipendente dalla pulizia al mount. Include solo i dischi selezionati dal relativo menu Azioni e non li espelle mai." y:1090 height:40 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
-        [document addSubview:[self preferenceLabel:@"Intervallo in minuti (da 5 a 10.080):" y:1136 height:20 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
+        [document addSubview:[self preferenceLabel:@"Intervallo in minuti (da 1 a 10.080):" y:1136 height:20 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
         self.periodicIntervalTextField = [[NSTextField alloc] initWithFrame:NSMakeRect(270, 1132, 144, 28)];
         self.periodicIntervalTextField.target = self;
         self.periodicIntervalTextField.action = @selector(savePeriodicInterval:);
@@ -2348,7 +2403,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (void)savePeriodicInterval:(NSTextField *)sender {
-    NSInteger minutes = MAX(5, MIN(sender.integerValue ?: 60, 10080));
+    NSInteger minutes = MAX(DSMinimumPeriodicCleanupIntervalMinutes, MIN(sender.integerValue ?: 60, DSMaximumPeriodicCleanupIntervalMinutes));
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     [defaults setInteger:minutes forKey:DSPeriodicCleaningInterval];
     [defaults setObject:DSPeriodicCleaningIntervalUnitMinutes forKey:DSPeriodicCleaningIntervalUnit];

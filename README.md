@@ -17,7 +17,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 ## What it does
 
 - Detects external drives at mount time and can clean an approved stable mount once, after a short delay.
-- Can run a periodic background cleanup at a chosen interval from 5 minutes to 7 days. It is off by default, starts and stops from the dashboard or menu bar, and includes only separately selected VolumeUUIDs.
+- Can run a periodic background cleanup at a chosen interval from 1 minute to 7 days. It is off by default, starts and stops from the dashboard or menu bar, and includes only separately selected VolumeUUIDs.
 - Opens a visible dashboard immediately, appears in the Dock, and keeps a broom menu-bar icon for quick actions and a non-destructive **Analyze** report for each drive.
 - Shows the disk, current category, a redacted folder name, and completed categories while it works. It never invents a file-count or byte-count percentage it cannot know.
 - Monitors CPU and resident memory for **DriveSweep itself** during scheduled cleanup. Two consecutive samples above 80% of one CPU core or 750 MB RAM request a safe stop and show a warning; it never inspects, throttles, or kills other Mac processes.
@@ -153,7 +153,7 @@ DriveSweep intentionally refuses internal disks, disk images, network shares, re
 
 ### How does periodic cleanup work?
 
-It is not enabled automatically. Choose **Includi nella pianificazione** for the exact drive from its Actions menu, then choose **Avvia pianificazione** and set minutes in its configuration popup. The Dashboard displays the remaining time until the first and every subsequent run. It does not depend on **Pulisci automaticamente dopo il mount**. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. **Ferma pianificazione** stops future work and requests cancellation before the next destructive category.
+It is not enabled automatically. Choose **Includi nella pianificazione** for the exact drive from its Actions menu, then choose **Avvia pianificazione** and set an interval from 1 minute to 7 days in its configuration popup. The Dashboard displays the remaining time until the first and every subsequent run. It does not depend on **Pulisci automaticamente dopo il mount**. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. **Ferma pianificazione** stops future work and requests cancellation before the next destructive category.
 
 ### I changed my mind while it is running
 
