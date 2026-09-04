@@ -16,7 +16,15 @@ jobs:
       - name: Verify signature
         run: codesign --verify --deep --strict --verbose=2 build/DriveSweep.app
       - name: Upload disk image
+        id: upload_disk_image
+        # The DMG is a convenience artifact.  A transient GitHub Artifact
+        # service failure must not turn a build/test/signing success red.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: DriveSweep
           path: build/DriveSweep.dmg
+          if-no-files-found: error
+      - name: Report artifact upload issue
+        if: steps.upload_disk_image.outcome == 'failure'
+        run: echo "::warning title=DMG artifact unavailable::The app built, tested, and passed signature verification, but GitHub's Artifact service did not accept this optional upload. Retry the workflow to obtain the convenience artifact."
