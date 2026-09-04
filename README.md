@@ -10,19 +10,20 @@ It deliberately touches only physical external, writable volumes. It ignores the
 | --- | --- |
 | What is enabled initially? | AppleDouble `._*` and `.DS_Store` cleanup; automatic cleanup and advanced categories are off. |
 | Can it clean every attached drive? | No. The drive must be a writable physical external volume, and excluded names, disk images, network shares, internal disks, and read-only media are rejected. |
-| Is automatic cleanup safe by default? | It is disabled. Enabling it still requires a separate explicit allow rule for that exact VolumeUUID. |
+| Is background cleanup safe by default? | It is disabled. Mount-time cleanup and the scheduler each require a separate explicit rule for that exact VolumeUUID. |
 | What should I do first? | Use **Analyze**. It is non-destructive and reports candidates, whitelist exclusions, and filesystem errors. |
 | Can I undo a cleanup? | No. Treat cleanup as deletion; test first on a disposable drive and preserve needed AppleDouble extensions in the whitelist. |
 
 ## What it does
 
 - Detects external drives at mount time and can clean an approved stable mount once, after a short delay.
-- Can also run a periodic background cleanup every 15 minutes, 1 hour, 6 hours, or 24 hours. It is off by default and requires both the global automatic-cleanup switch and consent for that exact VolumeUUID.
+- Can run a periodic background cleanup at a chosen interval from 5 minutes to 7 days. It is off by default, starts and stops from the dashboard or menu bar, and includes only separately selected VolumeUUIDs.
 - Opens a visible dashboard immediately, appears in the Dock, and keeps a broom menu-bar icon for quick actions and a non-destructive **Analyze** report for each drive.
 - Shows the disk, current category, a redacted folder name, and completed categories while it works. It never invents a file-count or byte-count percentage it cannot know.
 - Lets you cancel before the next filesystem item. If macOS is still opening a large folder, DriveSweep says so and waits rather than forcing the filesystem.
 - Uses one physical filesystem traversal for the file-metadata preview instead of rescanning the same drive for each default category. Protected root metadata folders are counted separately, so an inaccessible `.TemporaryItems` folder does not make a normal analysis fail.
 - Removes AppleDouble `._*` files while preserving extensions you add to the AppleDouble whitelist.
+- Can optionally remove only exact custom file extensions, such as `tmp, bak`. It rejects paths, wildcards, dots inside an extension, and whitespace; it never follows links, enters app packages, crosses filesystems, or enters protected metadata folders.
 - Optionally removes `.DS_Store`, `.Trashes`, `.Spotlight-V100`, `.fseventsd`, `.apdisk`, `.VolumeIcon.icns`, `Desktop.ini`, `Thumbs.db`, `.TemporaryItems`, and `.AppleDouble` directories.
 - Lists each eligible drive with **Analyze**, **Clean now**, and **Clean and eject** actions, plus per-UUID exclusion and automatic-cleanup controls.
 - Saves rules locally in macOS user defaults; no analytics, network calls, or subscriptions.
@@ -31,7 +32,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 
 Automatic cleanup is **off by default**. It never runs merely because a drive is external: you must enable the global automatic-cleanup preference **and** explicitly allow automatic cleaning for that drive's stable VolumeUUID in its dashboard card. DriveSweep waits briefly after mount, rechecks the identity and consent, then cleans the approved mount once. When you finish copying, use **Clean and eject** for a final pass.
 
-Periodic cleanup is a separate, opt-in setting in **Preferences**. When enabled together with automatic cleanup, DriveSweep starts one background pass shortly after launch and repeats at the selected interval. It uses the same UUID consent, exclusion, mount-identity, and cancellation checks as other automatic cleanups; it never ejects a disk. Keep it disabled while copying files to a drive.
+Periodic cleanup is a separate, opt-in setting in **Preferences**. It does not require mount-time cleanup to be enabled. Choose an interval in minutes, add only the intended drives with **Includi nella pianificazione** in the card’s Actions menu, then use **Avvia pianificazione** from the dashboard or menu bar. It starts one background pass shortly after launch and repeats at that interval. It uses per-drive UUID consent, exclusion, mount-identity, and cancellation checks; it never ejects a disk. Stop it before copying files to a drive.
 
 Analyze is always non-destructive: it reports candidates by category, AppleDouble files protected by the whitelist, and scan errors before you choose a cleanup action. Removing `._*` files may discard macOS-only metadata such as custom icons or legacy resource forks. The default **Cross-platform sharing** profile enables AppleDouble and `.DS_Store`; **Preserve Mac metadata** removes only `.DS_Store`; **Custom** preserves your individual toggles. All advanced categories require an explicit opt-in. Use the AppleDouble extension whitelist for types whose resource metadata must be preserved.
 
@@ -40,7 +41,7 @@ Analyze is always non-destructive: it reports candidates by category, AppleDoubl
 - Dashboard and menu actions retain the selected drive URL **and** its VolumeUUID. A stale menu item cannot silently adopt a newly mounted drive with the same name.
 - Cleanup rechecks the selected identity before each destructive category and stops later categories if the mount changed. **Clean and eject** rechecks it again immediately before ejecting.
 - Traversals do not follow symlinks, do not cross into a different filesystem, skip application-package descendants, and reject unsafe root-level targets such as symlinks or mountpoints.
-- Automatic cleanup checks the global setting and the UUID-specific consent again when queued work starts. Turning either one off prevents a queued automatic run from deleting files.
+- Mount-time and periodic cleanup independently recheck their global setting and their UUID-specific consent when queued work starts. Stopping a periodic run prevents later destructive categories from starting.
 - The Dashboard and Preferences windows hide rather than being destroyed when closed, so they can safely be reopened from the Dock or menu bar.
 
 These boundaries reduce the chance of acting on the wrong target; they do not make metadata deletion reversible. Keep backups and use **Analyze** before cleanup.
@@ -52,11 +53,11 @@ These boundaries reduce the chance of acting on the wrong target; they do not ma
 3. If AppleDouble metadata matters for a format, add its extension to the whitelist in **Preferences** and analyze again.
 4. Choose **Clean now** only after confirming the report, or choose **Clean and eject** after the last file copy.
 5. Keep automatic cleanup off unless you have tested the exact drive. If you enable it, allow it separately on that drive's dashboard card.
-6. To use periodic cleanup, enable it in **Preferences**, select an interval, and keep the global automatic-cleanup switch and that drive's UUID consent enabled. The broom icon stays in the macOS menu bar; its menu states whether periodic cleanup is active.
+6. To use periodic cleanup, enter the interval in minutes in **Preferences**, choose **Includi nella pianificazione** on the intended drive’s Actions menu, then start it from the dashboard or menu bar. The broom icon states whether it is active and exposes an immediate one-pass action.
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.4.5` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.4.6` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -88,10 +89,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.4.5`, the published SHA-256 is:
+For `v0.4.6`, the published SHA-256 is:
 
 ```text
-8a516cd3325497eb8751bb4fb3fa842c6249fbbafb3943a6dbf732cdc2924e35
+07be0521e0409a4822b775227916838e055d590e534eb4cb21e73d9850afa8f8
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.
@@ -128,7 +129,7 @@ make dmg
 
 If you build from an exFAT/FAT external disk, macOS can create `._*` AppleDouble files beside source and build files. The build removes them from the app bundle before signing. For a Git checkout already affected by such files, run `dot_clean -m .` from the repository root before using Git.
 
-The repository test suite covers default settings, profile snapshots, whitelist preservation, cancellation, single-pass preview behavior, mount-identity changes between cleanup categories, periodic scheduler consent and timer behavior, an end-to-end periodic cleanup on a disposable temporary fixture, disk-image rejection, safe window close/reopen lifecycles, bundle signing, and plist validity. It never cleans a real mounted volume.
+The repository test suite covers default settings, profile snapshots, whitelist preservation, exact custom-extension validation and cleanup, cancellation, single-pass preview behavior, mount-identity changes between cleanup categories, separate periodic scheduler consent and timer behavior, an end-to-end periodic cleanup on a disposable temporary fixture, disk-image rejection, safe window close/reopen lifecycles, bundle signing, and plist validity. It never cleans a real mounted volume.
 
 ## Manual end-to-end test
 
@@ -150,7 +151,7 @@ DriveSweep intentionally refuses internal disks, disk images, network shares, re
 
 ### How does periodic cleanup work?
 
-It is not enabled automatically. Turn on both **Pulisci automaticamente dopo il mount** and **Esegui la pulizia periodica**, choose the interval, then explicitly allow the exact drive from its card. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. Disable either switch to stop later automatic categories.
+It is not enabled automatically. Set the minutes in **Preferences**, choose **Includi nella pianificazione** for the exact drive from its Actions menu, then choose **Avvia pianificazione**. It does not depend on **Pulisci automaticamente dopo il mount**. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. **Ferma pianificazione** stops future work and requests cancellation before the next destructive category.
 
 ### I changed my mind while it is running
 

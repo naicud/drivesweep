@@ -11,6 +11,8 @@ static NSString *const DSPeriodicCleaning = @"periodicCleaning";
 static NSString *const DSPeriodicCleaningInterval = @"periodicCleaningInterval";
 static NSString *const DSAppleDouble = @"appleDouble";
 static NSString *const DSAppleDoubleExtensions = @"appleDoubleExtensions";
+static NSString *const DSCustomFiles = @"customFiles";
+static NSString *const DSCustomFileExtensions = @"customFileExtensions";
 static NSString *const DSDSStore = @"dsStore";
 static NSString *const DSTrashes = @"trashes";
 static NSString *const DSSpotlight = @"spotlight";
@@ -29,12 +31,13 @@ static NSString *const DSProfileMacMetadata = @"macMetadata";
 static NSString *const DSProfileCustom = @"custom";
 static NSString *const DSVolumeRuleExcluded = @"excluded";
 static NSString *const DSVolumeRuleAutomatic = @"allowAutomatic";
+static NSString *const DSVolumeRulePeriodic = @"allowPeriodic";
 static NSString *const DSVolumeRuleName = @"name";
 static NSUInteger DSPreviewFileTraversalCount = 0;
 
 static NSArray<NSString *> *DSCleanupPreferenceKeys(void) {
     return @[
-        DSAppleDouble, DSDSStore, DSTrashes, DSSpotlight, DSFileEvents,
+        DSAppleDouble, DSCustomFiles, DSDSStore, DSTrashes, DSSpotlight, DSFileEvents,
         DSApdisk, DSVolumeIcon, DSDesktopIni, DSThumbsDb, DSTemporaryItems,
         DSAppleDoubleDirectories
     ];
@@ -50,6 +53,7 @@ static NSString *DSCleanupReportLabel(NSString *key) {
     dispatch_once(&onceToken, ^{
         labels = @{
             DSAppleDouble: @"File ._* (AppleDouble)",
+            DSCustomFiles: @"File con estensioni selezionate",
             DSDSStore: @"File .DS_Store",
             DSTrashes: @"Cartella .Trashes",
             DSSpotlight: @"Indice Spotlight",
@@ -69,9 +73,13 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     return @{
         DSAutomaticCleaning: @NO,
         DSPeriodicCleaning: @NO,
-        DSPeriodicCleaningInterval: @(60 * 60),
+        // Stored in minutes.  Values from the 0.4.5 releases were seconds and
+        // are migrated transparently by periodicCleanupIntervalMinutes.
+        DSPeriodicCleaningInterval: @60,
         DSAppleDouble: @YES,
         DSAppleDoubleExtensions: @"",
+        DSCustomFiles: @NO,
+        DSCustomFileExtensions: @[],
         DSDSStore: @YES,
         DSTrashes: @NO,
         DSSpotlight: @NO,
@@ -156,7 +164,8 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSView *dashboardDocumentView;
 @property (strong) NSButton *analyzeAllButton;
 @property (strong) NSPopUpButton *profilePopup;
-@property (strong) NSPopUpButton *periodicIntervalPopup;
+@property (strong) NSTextField *periodicIntervalTextField;
+@property (strong) NSButton *scheduleButton;
 @property (strong) NSMutableDictionary<NSString *, DSVolumeTarget *> *dashboardVolumeTargets;
 @property (strong) NSMutableDictionary<NSString *, NSButton *> *preferenceCheckboxes;
 @property (strong) NSMutableDictionary<NSString *, NSTextField *> *preferenceTextFields;
@@ -171,7 +180,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options;
 - (BOOL)isVolumeExcludedForIdentity:(NSString *)identity;
 - (BOOL)allowsAutomaticCleaningForIdentity:(NSString *)identity;
+- (BOOL)allowsPeriodicCleaningForIdentity:(NSString *)identity;
 - (void)setVolumeRuleForIdentity:(NSString *)identity name:(NSString *)name excluded:(BOOL)excluded allowAutomatic:(BOOL)allowAutomatic;
+- (void)setPeriodicCleaning:(BOOL)allowed forIdentity:(NSString *)identity name:(NSString *)name;
 @end
 
 @implementation DriveSweepController
@@ -196,24 +207,29 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSApp.mainMenu = menuBar;
 }
 
-- (NSTimeInterval)periodicCleanupInterval {
+- (NSInteger)periodicCleanupIntervalMinutes {
     NSNumber *value = [[NSUserDefaults standardUserDefaults] objectForKey:DSPeriodicCleaningInterval];
-    NSTimeInterval interval = value.doubleValue;
-    if (![@[@(15 * 60), @(60 * 60), @(6 * 60 * 60), @(24 * 60 * 60)] containsObject:@((NSInteger)interval)]) return 60 * 60;
-    return interval;
+    NSInteger rawValue = value.integerValue;
+    // 0.4.5 accepted only these four second values.  Restrict migration to
+    // that exact legacy set so a valid new value such as 1,440 or 10,080
+    // minutes is never mistaken for seconds after an app relaunch.
+    NSSet<NSNumber *> *legacySeconds = [NSSet setWithArray:@[@(15 * 60), @(60 * 60), @(6 * 60 * 60), @(24 * 60 * 60)]];
+    NSInteger minutes = [legacySeconds containsObject:@(rawValue)] ? rawValue / 60 : rawValue;
+    return MAX(5, MIN(minutes ?: 60, 10080));
+}
+
+- (NSTimeInterval)periodicCleanupInterval {
+    return [self periodicCleanupIntervalMinutes] * 60;
 }
 
 - (BOOL)periodicCleanupIsEnabled {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    return [defaults boolForKey:DSAutomaticCleaning] && [defaults boolForKey:DSPeriodicCleaning];
+    return [defaults boolForKey:DSPeriodicCleaning];
 }
 
 - (NSString *)periodicCleanupIntervalLabel {
-    NSTimeInterval interval = [self periodicCleanupInterval];
-    if (interval == 15 * 60) return @"15 minuti";
-    if (interval == 60 * 60) return @"1 ora";
-    if (interval == 6 * 60 * 60) return @"6 ore";
-    return @"24 ore";
+    NSInteger minutes = [self periodicCleanupIntervalMinutes];
+    return [NSString stringWithFormat:@"%ld %@", (long)minutes, minutes == 1 ? @"minuto" : @"minuti"];
 }
 
 - (void)configurePeriodicCleanupTimer {
@@ -228,13 +244,38 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     });
 }
 
+- (void)startPeriodicCleanup:(id)sender {
+    (void)sender;
+    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:DSPeriodicCleaning];
+    [self configurePeriodicCleanupTimer];
+    [self setDashboardStatusMessage:[NSString stringWithFormat:@"Pianificazione avviata: ogni %@.", [self periodicCleanupIntervalLabel]]];
+    [self rebuildMenu];
+}
+
+- (void)stopPeriodicCleanup:(id)sender {
+    (void)sender;
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DSPeriodicCleaning];
+    [self.periodicCleanupTimer invalidate];
+    self.periodicCleanupTimer = nil;
+    if (self.activeOperation.periodicCleanup) {
+        @synchronized (self.activeOperation) { self.activeOperation.cancellationRequested = YES; }
+    }
+    [self setDashboardStatusMessage:@"Pianificazione fermata. Nessuna nuova pulizia periodica verrà avviata."];
+    [self rebuildMenu];
+}
+
+- (void)togglePeriodicCleanup:(id)sender {
+    if ([self periodicCleanupIsEnabled]) [self stopPeriodicCleanup:sender];
+    else [self startPeriodicCleanup:sender];
+}
+
 - (NSArray<DSVolumeTarget *> *)periodicCleanupTargets {
     if (![self periodicCleanupIsEnabled] || self.activeOperation) return @[];
     NSMutableArray<DSVolumeTarget *> *targets = [NSMutableArray array];
     for (NSURL *url in self.eligibleVolumes) {
         NSString *identity = self.eligibleVolumeIdentities[url.path];
         if (!identity.length || [self.scheduledCleanupPaths containsObject:url.path]) continue;
-        if ([self isVolumeExcludedForIdentity:identity] || ![self allowsAutomaticCleaningForIdentity:identity]) continue;
+        if ([self isVolumeExcludedForIdentity:identity] || ![self allowsPeriodicCleaningForIdentity:identity]) continue;
         [targets addObject:[[DSVolumeTarget alloc] initWithVolumeURL:url mountIdentity:identity]];
     }
     return targets.copy;
@@ -425,15 +466,38 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     return identity.length && [[self volumeRuleForIdentity:identity][DSVolumeRuleAutomatic] boolValue] && ![self isVolumeExcludedForIdentity:identity];
 }
 
+- (BOOL)allowsPeriodicCleaningForIdentity:(NSString *)identity {
+    return identity.length && [[self volumeRuleForIdentity:identity][DSVolumeRulePeriodic] boolValue] && ![self isVolumeExcludedForIdentity:identity];
+}
+
 - (void)setVolumeRuleForIdentity:(NSString *)identity name:(NSString *)name excluded:(BOOL)excluded allowAutomatic:(BOOL)allowAutomatic {
     if (!identity.length) return;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSMutableDictionary *rules = [[self volumeRules] mutableCopy];
-    if (excluded || allowAutomatic) {
-        NSMutableDictionary *rule = [[self volumeRuleForIdentity:identity] mutableCopy];
+    NSMutableDictionary *rule = [[self volumeRuleForIdentity:identity] mutableCopy];
+    if (excluded || allowAutomatic || [rule[DSVolumeRulePeriodic] boolValue]) {
         rule[DSVolumeRuleName] = name ?: @"";
         rule[DSVolumeRuleExcluded] = @(excluded);
         rule[DSVolumeRuleAutomatic] = @(allowAutomatic && !excluded);
+        if (excluded) rule[DSVolumeRulePeriodic] = @NO;
+        rules[identity] = rule.copy;
+    } else {
+        [rules removeObjectForKey:identity];
+    }
+    [defaults setObject:rules.copy forKey:DSVolumeRules];
+}
+
+- (void)setPeriodicCleaning:(BOOL)allowed forIdentity:(NSString *)identity name:(NSString *)name {
+    if (!identity.length) return;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *rules = [[self volumeRules] mutableCopy];
+    NSMutableDictionary *rule = [[self volumeRuleForIdentity:identity] mutableCopy];
+    BOOL excluded = [rule[DSVolumeRuleExcluded] boolValue];
+    if (allowed || excluded || [rule[DSVolumeRuleAutomatic] boolValue]) {
+        rule[DSVolumeRuleName] = name ?: @"";
+        rule[DSVolumeRuleExcluded] = @(excluded);
+        rule[DSVolumeRuleAutomatic] = @([rule[DSVolumeRuleAutomatic] boolValue] && !excluded);
+        rule[DSVolumeRulePeriodic] = @(allowed && !excluded);
         rules[identity] = rule.copy;
     } else {
         [rules removeObjectForKey:identity];
@@ -444,8 +508,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (NSString *)volumeRuleSummaryForIdentity:(NSString *)identity {
     if (!identity.length) return @"Identità non verificata — azioni bloccate";
     if ([self isVolumeExcludedForIdentity:identity]) return @"Escluso per questo disco";
-    if ([self allowsAutomaticCleaningForIdentity:identity]) return @"Auto consentito per questo UUID";
-    return @"Auto disattivato — consenso per disco richiesto";
+    BOOL automatic = [self allowsAutomaticCleaningForIdentity:identity];
+    BOOL periodic = [self allowsPeriodicCleaningForIdentity:identity];
+    if (automatic && periodic) return @"Auto al mount + pianificazione attivi";
+    if (periodic) return @"Incluso nella pianificazione";
+    if (automatic) return @"Auto al mount consentito";
+    return @"Nessuna pulizia automatica — consenso per disco richiesto";
 }
 
 - (void)setDashboardStatusMessage:(NSString *)message {
@@ -720,16 +788,39 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     return extensions.copy;
 }
 
+- (NSSet<NSString *> *)normalizedCustomFileExtensionsFromValue:(id)value {
+    NSArray *rawExtensions = nil;
+    if ([value isKindOfClass:[NSArray class]]) rawExtensions = value;
+    else if ([value isKindOfClass:[NSString class]]) rawExtensions = [value componentsSeparatedByString:@","];
+    else rawExtensions = @[];
+
+    NSMutableSet<NSString *> *extensions = [NSMutableSet set];
+    NSCharacterSet *whitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet;
+    for (id rawValue in rawExtensions) {
+        if (![rawValue isKindOfClass:[NSString class]]) continue;
+        NSString *extension = [rawValue lowercaseString];
+        if ([extension hasPrefix:@"."]) extension = [extension substringFromIndex:1];
+        if (!extension.length || extension.length > 32 ||
+            [extension rangeOfCharacterFromSet:whitespace].location != NSNotFound ||
+            [extension rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/\\*?[]"]].location != NSNotFound ||
+            [extension containsString:@"."]) continue;
+        [extensions addObject:extension];
+    }
+    return extensions.copy;
+}
+
 - (NSDictionary<NSString *, id> *)cleanupOptionsSnapshot {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSMutableDictionary<NSString *, id> *options = [NSMutableDictionary dictionary];
     for (NSString *key in DSCleanupPreferenceKeys()) options[key] = @([defaults boolForKey:key]);
     NSString *extensionValue = [defaults stringForKey:DSAppleDoubleExtensions] ?: @"";
     options[DSAppleDoubleExtensions] = [self protectedAppleDoubleExtensionsFromValue:extensionValue];
+    options[DSCustomFileExtensions] = [self normalizedCustomFileExtensionsFromValue:[defaults objectForKey:DSCustomFileExtensions]];
     return options.copy;
 }
 
 - (BOOL)cleanupOption:(NSString *)key isEnabledInOptions:(NSDictionary<NSString *, id> *)options {
+    if ([key isEqualToString:DSCustomFiles]) return [options[key] boolValue] && [options[DSCustomFileExtensions] count] > 0;
     return [options[key] boolValue];
 }
 
@@ -778,6 +869,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [defaults setObject:safe[DSPeriodicCleaningInterval] forKey:DSPeriodicCleaningInterval];
     for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:[safe[key] boolValue] forKey:key];
     [defaults setObject:safe[DSAppleDoubleExtensions] forKey:DSAppleDoubleExtensions];
+    [defaults setObject:safe[DSCustomFileExtensions] forKey:DSCustomFileExtensions];
     [defaults setObject:safe[DSCleanupProfile] forKey:DSCleanupProfile];
     [self selectProfile:DSProfileCrossPlatform inPopup:self.profilePopup];
     [self configurePeriodicCleanupTimer];
@@ -824,6 +916,57 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if (![name hasPrefix:@"._"]) continue;
         NSString *extension = [[name substringFromIndex:2].pathExtension lowercaseString];
         if ([protectedExtensions containsObject:extension]) continue;
+        if (unlink(entry->fts_accpath) == 0) { removed++; [self recordRemovalForOperation:operation]; }
+        else [errors addObject:[NSString stringWithFormat:@"%@ (%s)", name, strerror(errno)]];
+    }
+    fts_close(tree);
+    return removed;
+}
+
+- (NSUInteger)removeCustomExtensionFilesFromVolume:(NSURL *)volume extensions:(NSSet<NSString *> *)extensions errors:(NSMutableArray<NSString *> *)errors operation:(DSOperationState *)operation {
+    if (!extensions.count || [self operationShouldStop:operation]) return 0;
+    struct stat rootStatus;
+    if (lstat(volume.fileSystemRepresentation, &rootStatus) != 0) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (%s)", volume.lastPathComponent, strerror(errno)]];
+        return 0;
+    }
+    if (!S_ISDIR(rootStatus.st_mode) || S_ISLNK(rootStatus.st_mode)) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (la radice non è una directory sicura)", volume.lastPathComponent]];
+        return 0;
+    }
+
+    char *paths[] = { (char *)volume.fileSystemRepresentation, NULL };
+    FTS *tree = fts_open(paths, FTS_NOCHDIR | FTS_PHYSICAL | FTS_XDEV, NULL);
+    if (!tree) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (%s)", volume.lastPathComponent, strerror(errno)]];
+        return 0;
+    }
+    NSUInteger removed = 0;
+    FTSENT *entry = nil;
+    while ((entry = fts_read(tree))) {
+        if ([self operationShouldStop:operation]) break;
+        NSURL *entryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_path isDirectory:entry->fts_info == FTS_D relativeToURL:nil];
+        [self publishOperation:operation category:nil location:entryURL categoryFinished:NO force:NO];
+        if (entry->fts_info == FTS_D) {
+            NSNumber *isPackage = nil;
+            [entryURL getResourceValue:&isPackage forKey:NSURLIsPackageKey error:nil];
+            NSString *directoryName = [NSString stringWithUTF8String:entry->fts_name];
+            if (isPackage.boolValue || DSIsPreviewTraversalExcludedRootDirectory(directoryName)) fts_set(tree, entry, FTS_SKIP);
+            continue;
+        }
+        if (entry->fts_info == FTS_DNR || entry->fts_info == FTS_ERR) {
+            [errors addObject:[NSString stringWithFormat:@"%s (%s)", entry->fts_path, strerror(entry->fts_errno)]];
+            continue;
+        }
+        if (entry->fts_info != FTS_F) continue;
+        struct stat itemStatus;
+        if (lstat(entry->fts_accpath, &itemStatus) != 0) {
+            [errors addObject:[NSString stringWithFormat:@"%s (%s)", entry->fts_path, strerror(errno)]];
+            continue;
+        }
+        if (!S_ISREG(itemStatus.st_mode) || S_ISLNK(itemStatus.st_mode) || itemStatus.st_dev != rootStatus.st_dev) continue;
+        NSString *name = [NSString stringWithUTF8String:entry->fts_name];
+        if (![extensions containsObject:name.pathExtension.lowercaseString]) continue;
         if (unlink(entry->fts_accpath) == 0) { removed++; [self recordRemovalForOperation:operation]; }
         else [errors addObject:[NSString stringWithFormat:@"%@ (%s)", name, strerror(errno)]];
     }
@@ -925,6 +1068,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [errors addObject:[NSString stringWithFormat:@"%@ (%s)", volume.lastPathComponent, strerror(errno)]];
         return @{ @"cancelled": @NO, @"counts": @{}, @"protected": @0 };
     }
+    struct stat rootStatus;
+    if (lstat(volume.fileSystemRepresentation, &rootStatus) != 0 || !S_ISDIR(rootStatus.st_mode) || S_ISLNK(rootStatus.st_mode)) {
+        [errors addObject:[NSString stringWithFormat:@"%@ (la radice non è una directory sicura)", volume.lastPathComponent]];
+        fts_close(tree);
+        return @{ @"cancelled": @NO, @"counts": @{}, @"protected": @0 };
+    }
     NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
     for (NSString *key in DSCleanupPreferenceKeys()) counts[key] = @0;
     NSUInteger protectedCount = 0;
@@ -952,11 +1101,16 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
             continue;
         }
         if (entry->fts_info != FTS_F) continue;
+        if (!entry->fts_statp || !S_ISREG(entry->fts_statp->st_mode) || entry->fts_statp->st_dev != rootStatus.st_dev) continue;
         NSString *name = [NSString stringWithUTF8String:entry->fts_name];
         if ([self cleanupOption:DSAppleDouble isEnabledInOptions:options] && [name hasPrefix:@"._"]) {
             NSString *extension = [[name substringFromIndex:2].pathExtension lowercaseString];
             if ([protectedExtensions containsObject:extension]) protectedCount++;
             else counts[DSAppleDouble] = @([counts[DSAppleDouble] unsignedIntegerValue] + 1);
+        }
+        if ([self cleanupOption:DSCustomFiles isEnabledInOptions:options] &&
+            [options[DSCustomFileExtensions] containsObject:name.pathExtension.lowercaseString]) {
+            counts[DSCustomFiles] = @([counts[DSCustomFiles] unsignedIntegerValue] + 1);
         }
         for (NSString *key in fileNames) {
             if ([self cleanupOption:key isEnabledInOptions:options] && [name isEqualToString:fileNames[key]]) {
@@ -997,7 +1151,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     for (NSString *key in DSCleanupPreferenceKeys()) if (fileCounts[key]) counts[key] = fileCounts[key];
     protectedAppleDouble = [filePreview[@"protected"] unsignedIntegerValue];
     if ([filePreview[@"cancelled"] boolValue]) return [self cancelledPreviewResult:counts errors:errors];
-    for (NSString *key in @[DSAppleDouble, DSDSStore, DSApdisk, DSVolumeIcon, DSDesktopIni, DSThumbsDb, DSAppleDoubleDirectories]) {
+    for (NSString *key in @[DSAppleDouble, DSCustomFiles, DSDSStore, DSApdisk, DSVolumeIcon, DSDesktopIni, DSThumbsDb, DSAppleDoubleDirectories]) {
         if ([self cleanupOption:key isEnabledInOptions:options]) [self publishOperation:operation category:key location:nil categoryFinished:YES force:YES];
     }
     NSDictionary<NSString *, NSString *> *rootCategories = @{ DSTrashes: @".Trashes", DSSpotlight: @".Spotlight-V100", DSFileEvents: @".fseventsd", DSTemporaryItems: @".TemporaryItems" };
@@ -1034,9 +1188,10 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (BOOL)automaticCleanupStillAllowedForOperation:(DSOperationState *)operation identity:(NSString *)identity {
     if (!operation.automaticCleanup) return YES;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    return [defaults boolForKey:DSAutomaticCleaning] &&
-        (!operation.periodicCleanup || [defaults boolForKey:DSPeriodicCleaning]) &&
-        [self allowsAutomaticCleaningForIdentity:identity];
+    if (operation.periodicCleanup) {
+        return [defaults boolForKey:DSPeriodicCleaning] && [self allowsPeriodicCleaningForIdentity:identity];
+    }
+    return [defaults boolForKey:DSAutomaticCleaning] && [self allowsAutomaticCleaningForIdentity:identity];
 }
 
 - (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options operation:(DSOperationState *)operation {
@@ -1064,6 +1219,14 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         removed += [self removeAppleDoubleFilesFromVolume:volume protectedExtensions:options[DSAppleDoubleExtensions] errors:errors operation:operation];
         if ([self operationShouldStop:operation]) return [self cancelledCleanupResult:removed errors:errors];
         [self publishOperation:operation category:DSAppleDouble location:nil categoryFinished:YES force:YES];
+    }
+    if ([self cleanupOption:DSCustomFiles isEnabledInOptions:options]) {
+        if (![self automaticCleanupStillAllowedForOperation:operation identity:expectedMountIdentity]) return @{ @"success": @NO, @"removed": @(removed), @"appleDoubleProcessed": @(appleDoubleProcessed), @"errors": @[@"La pulizia automatica non è più autorizzata."] };
+        if (![self volume:volume matchesExpectedMountIdentity:expectedMountIdentity]) return [self mountChangedCleanupResultWithRemoved:removed];
+        [self publishOperation:operation category:DSCustomFiles location:volume categoryFinished:NO force:YES];
+        removed += [self removeCustomExtensionFilesFromVolume:volume extensions:options[DSCustomFileExtensions] errors:errors operation:operation];
+        if ([self operationShouldStop:operation]) return [self cancelledCleanupResult:removed errors:errors];
+        [self publishOperation:operation category:DSCustomFiles location:nil categoryFinished:YES force:YES];
     }
     NSArray<NSArray<id> *> *fileCategories = @[
         @[DSDSStore, @".DS_Store", @NO], @[DSApdisk, @".apdisk", @NO], @[DSVolumeIcon, @".VolumeIcon.icns", @NO],
@@ -1110,10 +1273,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     }
     BOOL mountAutomatic = [source isEqualToString:@"montaggio automatico"];
     BOOL periodicAutomatic = [source isEqualToString:@"pulizia periodica"];
-    if ((mountAutomatic || periodicAutomatic) &&
-        (![[NSUserDefaults standardUserDefaults] boolForKey:DSAutomaticCleaning] ||
-         (periodicAutomatic && ![[NSUserDefaults standardUserDefaults] boolForKey:DSPeriodicCleaning]) ||
-         ![self allowsAutomaticCleaningForIdentity:expectedMountIdentity])) {
+    BOOL automaticAuthorized = mountAutomatic && [[NSUserDefaults standardUserDefaults] boolForKey:DSAutomaticCleaning] && [self allowsAutomaticCleaningForIdentity:expectedMountIdentity];
+    BOOL periodicAuthorized = periodicAutomatic && [[NSUserDefaults standardUserDefaults] boolForKey:DSPeriodicCleaning] && [self allowsPeriodicCleaningForIdentity:expectedMountIdentity];
+    if ((mountAutomatic || periodicAutomatic) && !(automaticAuthorized || periodicAuthorized)) {
         if (completion) completion(NO);
         return;
     }
@@ -1256,6 +1418,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMenuItem *periodicItem = [[NSMenuItem alloc] initWithTitle:periodicStatus action:nil keyEquivalent:@""];
     periodicItem.enabled = NO;
     [menu addItem:periodicItem];
+    NSMenuItem *periodicToggle = [[NSMenuItem alloc] initWithTitle:([self periodicCleanupIsEnabled] ? @"Ferma pianificazione" : @"Avvia pianificazione") action:@selector(togglePeriodicCleanup:) keyEquivalent:@""];
+    periodicToggle.target = self;
+    [menu addItem:periodicToggle];
+    NSMenuItem *periodicNow = [[NSMenuItem alloc] initWithTitle:@"Esegui pianificazione ora" action:@selector(runPeriodicCleanup:) keyEquivalent:@""];
+    periodicNow.target = self; periodicNow.enabled = [self periodicCleanupIsEnabled] && !self.activeOperation;
+    [menu addItem:periodicNow];
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Apri DriveSweep" action:@selector(showDashboard:) keyEquivalent:@"o"];
     open.target = self;
@@ -1397,13 +1565,17 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSDictionary<NSString *, id> *rule = [self volumeRuleForIdentity:identity];
     BOOL excluded = [rule[DSVolumeRuleExcluded] boolValue];
     BOOL allowAutomatic = [rule[DSVolumeRuleAutomatic] boolValue];
+    BOOL allowPeriodic = [rule[DSVolumeRulePeriodic] boolValue];
     if (sender.tag == 1) {
         excluded = !excluded;
         if (excluded) allowAutomatic = NO;
     } else if (sender.tag == 2 && !excluded) {
         allowAutomatic = !allowAutomatic;
+    } else if (sender.tag == 3 && !excluded) {
+        allowPeriodic = !allowPeriodic;
     }
     [self setVolumeRuleForIdentity:identity name:target.volumeURL.lastPathComponent excluded:excluded allowAutomatic:allowAutomatic];
+    [self setPeriodicCleaning:allowPeriodic forIdentity:identity name:target.volumeURL.lastPathComponent];
     [self rebuildMenu];
 }
 
@@ -1414,13 +1586,17 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSDictionary<NSString *, id> *rule = [self volumeRuleForIdentity:identity];
     BOOL excluded = [rule[DSVolumeRuleExcluded] boolValue];
     BOOL allowAutomatic = [rule[DSVolumeRuleAutomatic] boolValue];
+    BOOL allowPeriodic = [rule[DSVolumeRulePeriodic] boolValue];
     if (sender.tag == 1) {
         excluded = !excluded;
         if (excluded) allowAutomatic = NO;
     } else if (sender.tag == 2 && !excluded) {
         allowAutomatic = !allowAutomatic;
+    } else if (sender.tag == 3 && !excluded) {
+        allowPeriodic = !allowPeriodic;
     }
     [self setVolumeRuleForIdentity:identity name:target.volumeURL.lastPathComponent excluded:excluded allowAutomatic:allowAutomatic];
+    [self setPeriodicCleaning:allowPeriodic forIdentity:identity name:target.volumeURL.lastPathComponent];
     [self rebuildMenu];
 }
 
@@ -1486,6 +1662,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         preferences.bezelStyle = NSBezelStyleRounded;
         [content addSubview:preferences];
 
+        self.scheduleButton = [NSButton buttonWithTitle:@"Avvia pianificazione" target:self action:@selector(togglePeriodicCleanup:)];
+        self.scheduleButton.frame = NSMakeRect(330, 404, 210, 34);
+        self.scheduleButton.bezelStyle = NSBezelStyleRounded;
+        self.scheduleButton.accessibilityLabel = @"Avvia o ferma pulizia periodica";
+        [content addSubview:self.scheduleButton];
+
         self.operationStatusLabel = [NSTextField labelWithString:@""];
         self.operationStatusLabel.frame = NSMakeRect(330, 414, 286, 20);
         self.operationStatusLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
@@ -1546,6 +1728,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMenuItem *automatic = [[NSMenuItem alloc] initWithTitle:([self allowsAutomaticCleaningForIdentity:identity] ? @"Blocca pulizia automatica" : @"Consenti pulizia automatica") action:@selector(toggleVolumeRuleFromMenu:) keyEquivalent:@""];
     automatic.target = self; automatic.representedObject = target; automatic.identifier = identity ?: @""; automatic.tag = 2; automatic.enabled = identity.length > 0 && !excluded;
     [menu addItem:automatic];
+    NSMenuItem *periodic = [[NSMenuItem alloc] initWithTitle:([self allowsPeriodicCleaningForIdentity:identity] ? @"Rimuovi dalla pianificazione" : @"Includi nella pianificazione") action:@selector(toggleVolumeRuleFromMenu:) keyEquivalent:@""];
+    periodic.target = self; periodic.representedObject = target; periodic.identifier = identity ?: @""; periodic.tag = 3; periodic.enabled = identity.length > 0 && !excluded;
+    [menu addItem:periodic];
     NSMenuItem *title = [[NSMenuItem alloc] initWithTitle:@"Azioni…" action:nil keyEquivalent:@""];
     title.enabled = NO;
     [menu insertItem:title atIndex:0];
@@ -1595,6 +1780,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)refreshDashboard {
     if (!self.dashboardStatusLabel || !self.dashboardDocumentView) return;
+    self.scheduleButton.title = [self periodicCleanupIsEnabled] ? @"Ferma pianificazione" : @"Avvia pianificazione";
     NSArray<NSURL *> *volumes = self.eligibleVolumes;
     [self.dashboardVolumeTargets removeAllObjects];
     for (NSView *subview in [self.dashboardDocumentView.subviews copy]) [subview removeFromSuperview];
@@ -1676,13 +1862,10 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     }
     self.preferenceTextFields[DSAppleDoubleExtensions].stringValue = [defaults stringForKey:DSAppleDoubleExtensions] ?: @"";
     self.preferenceTextFields[DSExcludedVolumes].stringValue = [defaults stringForKey:DSExcludedVolumes] ?: @"";
+    NSArray<NSString *> *customExtensions = [defaults objectForKey:DSCustomFileExtensions];
+    self.preferenceTextFields[DSCustomFileExtensions].stringValue = [customExtensions isKindOfClass:NSArray.class] ? [customExtensions componentsJoinedByString:@", "] : @"";
     [self selectProfile:[defaults stringForKey:DSCleanupProfile] ?: DSProfileCrossPlatform inPopup:self.profilePopup];
-    for (NSMenuItem *item in self.periodicIntervalPopup.itemArray) {
-        if ([item.representedObject integerValue] == (NSInteger)[self periodicCleanupInterval]) {
-            [self.periodicIntervalPopup selectItem:item];
-            break;
-        }
-    }
+    self.periodicIntervalTextField.stringValue = [NSString stringWithFormat:@"%ld", (long)[self periodicCleanupIntervalMinutes]];
 }
 
 - (void)showPreferences:(id)sender {
@@ -1700,7 +1883,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         scroll.hasVerticalScroller = YES;
         scroll.autohidesScrollers = YES;
         scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        DSFlippedView *document = [[DSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 1174)];
+        DSFlippedView *document = [[DSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 1320)];
         scroll.documentView = document;
         [content addSubview:scroll];
 
@@ -1762,17 +1945,18 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
         [document addSubview:[self preferenceSection:@"Pulizia periodica in background" y:1034]];
         [document addSubview:[self checkbox:@"Esegui la pulizia periodica" key:DSPeriodicCleaning y:1062]];
-        [document addSubview:[self preferenceLabel:@"Richiede anche la pulizia automatica globale e il consenso esplicito per ogni VolumeUUID. Parte tre secondi dopo l'avvio e non espelle mai il disco." y:1090 height:40 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
-        [document addSubview:[self preferenceLabel:@"Intervallo:" y:1136 height:20 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
-        self.periodicIntervalPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(108, 1132, 180, 28) pullsDown:NO];
-        for (NSArray<id> *choice in @[@[@(15 * 60), @"15 minuti"], @[@(60 * 60), @"1 ora"], @[@(6 * 60 * 60), @"6 ore"], @[@(24 * 60 * 60), @"24 ore"]]) {
-            [self.periodicIntervalPopup addItemWithTitle:choice[1]];
-            self.periodicIntervalPopup.lastItem.representedObject = choice[0];
-        }
-        self.periodicIntervalPopup.target = self;
-        self.periodicIntervalPopup.action = @selector(periodicIntervalSelectionChanged:);
-        self.periodicIntervalPopup.accessibilityLabel = @"Intervallo pulizia periodica";
-        [document addSubview:self.periodicIntervalPopup];
+        [document addSubview:[self preferenceLabel:@"È indipendente dalla pulizia al mount. Include solo i dischi selezionati dal relativo menu Azioni e non li espelle mai." y:1090 height:40 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
+        [document addSubview:[self preferenceLabel:@"Intervallo in minuti (da 5 a 10.080):" y:1136 height:20 font:[NSFont systemFontOfSize:11] color:NSColor.secondaryLabelColor]];
+        self.periodicIntervalTextField = [[NSTextField alloc] initWithFrame:NSMakeRect(270, 1132, 144, 28)];
+        self.periodicIntervalTextField.target = self;
+        self.periodicIntervalTextField.action = @selector(savePeriodicInterval:);
+        self.periodicIntervalTextField.accessibilityLabel = @"Intervallo pulizia periodica in minuti";
+        [document addSubview:self.periodicIntervalTextField];
+
+        [document addSubview:[self preferenceSection:@"File con estensioni selezionate" y:1190]];
+        [document addSubview:[self checkbox:@"Rimuovi file con queste estensioni esatte" key:DSCustomFiles y:1218]];
+        [document addSubview:[self preferenceLabel:@"Rischio alto. Inserisci estensioni separate da virgola (es. tmp, bak). Nessun wildcard, percorso o cartella; pacchetti, link e cartelle protette sono sempre esclusi." y:1246 height:42 font:[NSFont systemFontOfSize:11] color:NSColor.systemOrangeColor]];
+        [document addSubview:[self preferenceTextField:DSCustomFileExtensions y:1290]];
     }
     [self refreshPreferenceControls];
     [self.preferencesWindow makeKeyAndOrderFront:nil];
@@ -1791,12 +1975,21 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [self rebuildMenu];
 }
 - (void)saveTextPreference:(NSTextField *)sender {
-    [[NSUserDefaults standardUserDefaults] setObject:sender.stringValue forKey:sender.identifier];
+    if ([sender.identifier isEqualToString:DSCustomFileExtensions]) {
+        NSArray<NSString *> *normalized = [[[self normalizedCustomFileExtensionsFromValue:sender.stringValue] allObjects] sortedArrayUsingSelector:@selector(compare:)];
+        [[NSUserDefaults standardUserDefaults] setObject:normalized forKey:sender.identifier];
+        sender.stringValue = [normalized componentsJoinedByString:@", "];
+        [[NSUserDefaults standardUserDefaults] setObject:DSProfileCustom forKey:DSCleanupProfile];
+    } else {
+        [[NSUserDefaults standardUserDefaults] setObject:sender.stringValue forKey:sender.identifier];
+    }
     [self rebuildMenu];
 }
 
-- (void)periodicIntervalSelectionChanged:(NSPopUpButton *)sender {
-    [[NSUserDefaults standardUserDefaults] setObject:sender.selectedItem.representedObject forKey:DSPeriodicCleaningInterval];
+- (void)savePeriodicInterval:(NSTextField *)sender {
+    NSInteger minutes = MAX(5, MIN(sender.integerValue ?: 60, 10080));
+    [[NSUserDefaults standardUserDefaults] setInteger:minutes forKey:DSPeriodicCleaningInterval];
+    sender.stringValue = [NSString stringWithFormat:@"%ld", (long)minutes];
     [self configurePeriodicCleanupTimer];
     [self rebuildMenu];
 }

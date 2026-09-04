@@ -72,6 +72,11 @@
 - (NSArray<DSVolumeTarget *> *)periodicCleanupTargets;
 - (void)runPeriodicCleanup:(NSTimer *)timer;
 - (void)configurePeriodicCleanupTimer;
+- (void)stopPeriodicCleanup:(id)sender;
+@end
+
+@interface DriveSweepController (CustomExtensionCleanupRegression)
+- (NSSet<NSString *> *)normalizedCustomFileExtensionsFromValue:(id)value;
 @end
 
 static BOOL DashboardReopenAfterCloseRegression(void) {
@@ -137,6 +142,93 @@ static BOOL RestoreFixtureDirectoryTraversal(NSString *path) {
     return RunChmod(@[@"-N", path]) && chmod(path.fileSystemRepresentation, 0700) == 0;
 }
 
+static BOOL CustomExtensionCleanupRegression(TestDriveSweepController *controller, NSUserDefaults *defaults) {
+    NSString *customFilesKey = @"customFiles";
+    NSString *customExtensionsKey = @"customFileExtensions";
+    NSArray<NSString *> *preferenceKeys = [DSCleanupPreferenceKeys() arrayByAddingObjectsFromArray:@[customExtensionsKey]];
+    NSMutableDictionary<NSString *, id> *savedValues = [NSMutableDictionary dictionary];
+    for (NSString *key in preferenceKeys) {
+        id value = [defaults objectForKey:key];
+        savedValues[key] = value ?: [NSNull null];
+    }
+
+    char template[] = "/private/tmp/drivesweep-custom.XXXXXX";
+    char *temporaryPath = mkdtemp(template);
+    if (!temporaryPath) return NO;
+    NSString *root = [NSString stringWithUTF8String:temporaryPath];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *nested = [root stringByAppendingPathComponent:@"nested"];
+    NSString *package = [root stringByAppendingPathComponent:@"Bundle.app"];
+    NSString *trash = [root stringByAppendingPathComponent:@".Trashes"];
+    NSString *temporaryItems = [root stringByAppendingPathComponent:@".TemporaryItems"];
+    NSString *folder = [root stringByAppendingPathComponent:@"folder.tmp"];
+    NSString *wanted = [root stringByAppendingPathComponent:@"wanted.TMP"];
+    NSString *nestedWanted = [nested stringByAppendingPathComponent:@"nested.BaK"];
+    NSString *sentinel = [root stringByAppendingPathComponent:@"keep.txt"];
+    NSString *packagePayload = [package stringByAppendingPathComponent:@"inside.tmp"];
+    NSString *trashPayload = [trash stringByAppendingPathComponent:@"inside.tmp"];
+    NSString *temporaryPayload = [temporaryItems stringByAppendingPathComponent:@"inside.tmp"];
+    NSString *symlink = [root stringByAppendingPathComponent:@"link.tmp"];
+    NSString *fifo = [root stringByAppendingPathComponent:@"pipe.tmp"];
+    BOOL fixtureReady =
+        CreateDirectory(manager, nested) &&
+        CreateDirectory(manager, package) &&
+        CreateDirectory(manager, trash) &&
+        CreateDirectory(manager, temporaryItems) &&
+        CreateDirectory(manager, folder) &&
+        [@"payload" writeToFile:wanted atomically:YES encoding:NSUTF8StringEncoding error:nil] &&
+        [@"payload" writeToFile:nestedWanted atomically:YES encoding:NSUTF8StringEncoding error:nil] &&
+        [@"sentinel" writeToFile:sentinel atomically:YES encoding:NSUTF8StringEncoding error:nil] &&
+        [@"package" writeToFile:packagePayload atomically:YES encoding:NSUTF8StringEncoding error:nil] &&
+        [@"trash" writeToFile:trashPayload atomically:YES encoding:NSUTF8StringEncoding error:nil] &&
+        [@"temporary" writeToFile:temporaryPayload atomically:YES encoding:NSUTF8StringEncoding error:nil] &&
+        [manager createSymbolicLinkAtPath:symlink withDestinationPath:sentinel error:nil] &&
+        mkfifo(fifo.fileSystemRepresentation, 0600) == 0;
+    if (!fixtureReady) {
+        [manager removeItemAtPath:root error:nil];
+        return NO;
+    }
+
+    NSSet<NSString *> *normalized = [controller normalizedCustomFileExtensionsFromValue:@[
+        @".TMP", @"bak", @"bad/name", @"wild*card", @"question?mark", @"has space", @"", @".",
+        [@"long" stringByPaddingToLength:65 withString:@"x" startingAtIndex:0]
+    ]];
+    BOOL validated = [normalized isEqualToSet:[NSSet setWithObjects:@"tmp", @"bak", nil]];
+
+    for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:NO forKey:key];
+    [defaults setBool:YES forKey:customFilesKey];
+    [defaults setObject:@[@".TMP", @"bak", @"bad/name", @"wild*card"] forKey:customExtensionsKey];
+    NSDictionary<NSString *, id> *snapshot = [controller cleanupOptionsSnapshot];
+    NSSet<NSString *> *snapshotExtensions = snapshot[customExtensionsKey];
+    BOOL snapshotIsImmutable = [snapshotExtensions isEqualToSet:[NSSet setWithObjects:@"tmp", @"bak", nil]];
+    [defaults setObject:@[@"txt"] forKey:customExtensionsKey];
+
+    NSDictionary<NSString *, id> *preview = [controller previewVolumeOnWorker:[NSURL fileURLWithPath:root] expectedMountIdentity:nil options:snapshot];
+    NSUInteger previewCount = [preview[@"counts"][customFilesKey] unsignedIntegerValue];
+    BOOL previewIsSafe = [preview[@"success"] boolValue] && previewCount == 2 && [preview[@"errors"] count] == 0;
+
+    NSDictionary<NSString *, id> *cleanup = [controller cleanVolumeOnWorker:[NSURL fileURLWithPath:root] expectedMountIdentity:nil options:snapshot];
+    BOOL cleanupIsSafe = [cleanup[@"success"] boolValue] &&
+        [cleanup[@"removed"] unsignedIntegerValue] == 2 &&
+        ![manager fileExistsAtPath:wanted] &&
+        ![manager fileExistsAtPath:nestedWanted] &&
+        [manager fileExistsAtPath:sentinel] &&
+        [manager fileExistsAtPath:folder] &&
+        [manager fileExistsAtPath:packagePayload] &&
+        [manager fileExistsAtPath:trashPayload] &&
+        [manager fileExistsAtPath:temporaryPayload] &&
+        [manager fileExistsAtPath:symlink] &&
+        [manager fileExistsAtPath:fifo];
+
+    [manager removeItemAtPath:root error:nil];
+    for (NSString *key in preferenceKeys) {
+        id value = savedValues[key];
+        if (value == [NSNull null]) [defaults removeObjectForKey:key];
+        else [defaults setObject:value forKey:key];
+    }
+    return validated && snapshotIsImmutable && previewIsSafe && cleanupIsSafe;
+}
+
 int main(void) {
     @autoreleasepool {
         char template[] = "/private/tmp/drivesweep-cleanup.XXXXXX";
@@ -177,7 +269,9 @@ int main(void) {
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSDictionary<NSString *, id> *registeredDefaults = DSDefaultPreferences();
         if (![registeredDefaults[DSAppleDouble] boolValue] ||
-            [registeredDefaults[DSAutomaticCleaning] boolValue]) return 1;
+            [registeredDefaults[DSAutomaticCleaning] boolValue] ||
+            [registeredDefaults[DSCustomFiles] boolValue] ||
+            [registeredDefaults[DSCustomFileExtensions] count] != 0) return 1;
         TestDriveSweepController *controller = [[TestDriveSweepController alloc] init];
         controller.testDiskInfo = @{
             @"Internal": @NO,
@@ -204,6 +298,14 @@ int main(void) {
             [crossPlatformOptions[DSAppleDouble] boolValue] &&
             [crossPlatformOptions[DSDSStore] boolValue] &&
             ![crossPlatformOptions[DSTrashes] boolValue];
+
+        [defaults setInteger:15 * 60 forKey:@"periodicCleaningInterval"];
+        BOOL migratesLegacyPeriodicSeconds = [controller periodicCleanupIntervalMinutes] == 15;
+        [defaults setInteger:2 forKey:@"periodicCleaningInterval"];
+        BOOL clampsShortPeriodicInterval = [controller periodicCleanupIntervalMinutes] == 5;
+        [defaults setInteger:7 * 24 * 60 * 60 forKey:@"periodicCleaningInterval"];
+        BOOL clampsLongPeriodicInterval = [controller periodicCleanupIntervalMinutes] == 10080;
+        [defaults setInteger:60 forKey:@"periodicCleaningInterval"];
 
         NSString *testIdentity = @"drivesweep-harness-volume-uuid";
         [controller setVolumeRuleForIdentity:testIdentity name:@"Fixture" excluded:NO allowAutomatic:YES];
@@ -239,16 +341,17 @@ int main(void) {
         NSString *periodicIdentity = @"periodic-fixture-uuid";
         controller.eligibleVolumes = @[volume];
         controller.eligibleVolumeIdentities = @{ volume.path: periodicIdentity };
-        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Fixture" excluded:NO allowAutomatic:YES];
-        [defaults setBool:YES forKey:DSAutomaticCleaning];
+        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Fixture" excluded:NO allowAutomatic:NO];
+        [controller setPeriodicCleaning:YES forIdentity:periodicIdentity name:@"Fixture"];
+        [defaults setBool:NO forKey:DSAutomaticCleaning];
         [defaults setBool:YES forKey:@"periodicCleaning"];
         NSArray<DSVolumeTarget *> *periodicTargets = [controller periodicCleanupTargets];
-        BOOL periodicTargetsRequireConsent = periodicTargets.count == 1 &&
+        BOOL periodicTargetsRequireSeparateConsent = periodicTargets.count == 1 &&
             [periodicTargets.firstObject.volumeURL.path isEqualToString:volume.path] &&
             [periodicTargets.firstObject.mountIdentity isEqualToString:periodicIdentity];
-        [defaults setBool:NO forKey:DSAutomaticCleaning];
-        BOOL periodicTargetsRequireMasterSwitch = [controller periodicCleanupTargets].count == 0;
-        [defaults setBool:YES forKey:DSAutomaticCleaning];
+        [controller setPeriodicCleaning:NO forIdentity:periodicIdentity name:@"Fixture"];
+        BOOL periodicTargetsRequirePerDiskSelection = [controller periodicCleanupTargets].count == 0;
+        [controller setPeriodicCleaning:YES forIdentity:periodicIdentity name:@"Fixture"];
         [controller runPeriodicCleanup:nil];
         BOOL periodicRunUsesAuthorizedTarget =
             [controller.capturedPeriodicVolume.path isEqualToString:volume.path] &&
@@ -256,10 +359,9 @@ int main(void) {
             [controller.capturedPeriodicSource isEqualToString:@"pulizia periodica"];
         [controller configurePeriodicCleanupTimer];
         BOOL periodicTimerEnabled = controller.periodicCleanupTimer != nil;
-        [defaults setBool:NO forKey:@"periodicCleaning"];
-        [controller configurePeriodicCleanupTimer];
-        BOOL periodicTimerDisabled = controller.periodicCleanupTimer == nil;
-        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Fixture" excluded:NO allowAutomatic:NO];
+        [controller stopPeriodicCleanup:nil];
+        BOOL periodicTimerDisabled = controller.periodicCleanupTimer == nil && ![defaults boolForKey:@"periodicCleaning"];
+        [controller setPeriodicCleaning:NO forIdentity:periodicIdentity name:@"Fixture"];
 
         NSString *periodicRoot = [root stringByAppendingPathComponent:@"periodic-e2e"];
         if (!CreateDirectory(manager, periodicRoot) ||
@@ -273,10 +375,11 @@ int main(void) {
         controller.testMountIdentity = periodicIdentity;
         controller.mountIdentityChecks = 0;
         controller.changeIdentityAfterChecks = NSUIntegerMax;
-        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Periodic fixture" excluded:NO allowAutomatic:YES];
+        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Periodic fixture" excluded:NO allowAutomatic:NO];
+        [controller setPeriodicCleaning:YES forIdentity:periodicIdentity name:@"Periodic fixture"];
         for (NSString *key in DSCleanupPreferenceKeys()) [defaults setBool:NO forKey:key];
         [defaults setBool:YES forKey:DSDSStore];
-        [defaults setBool:YES forKey:DSAutomaticCleaning];
+        [defaults setBool:NO forKey:DSAutomaticCleaning];
         [defaults setBool:YES forKey:@"periodicCleaning"];
         controller.runActualPeriodicCleanup = YES;
         [controller runPeriodicCleanup:nil];
@@ -288,7 +391,7 @@ int main(void) {
             ![manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@".DS_Store"]] &&
             [manager fileExistsAtPath:[periodicRoot stringByAppendingPathComponent:@"keep.txt"]];
         controller.runActualPeriodicCleanup = NO;
-        [controller setVolumeRuleForIdentity:periodicIdentity name:@"Periodic fixture" excluded:NO allowAutomatic:NO];
+        [controller setPeriodicCleaning:NO forIdentity:periodicIdentity name:@"Periodic fixture"];
         [controller showPreviewReport:@{
             @"success": @YES,
             @"counts": @{},
@@ -419,7 +522,8 @@ int main(void) {
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@".DS_Store"]] &&
             [manager fileExistsAtPath:[root stringByAppendingPathComponent:@"keep.txt"]];
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
+        BOOL customExtensionCleanup = CustomExtensionCleanupRegression(controller, defaults);
         [manager removeItemAtPath:root error:nil];
-        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireConsent && periodicTargetsRequireMasterSwitch && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && periodicEndToEndCleanup && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse ? 0 : 1;
+        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && migratesLegacyPeriodicSeconds && clampsShortPeriodicInterval && clampsLongPeriodicInterval && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireSeparateConsent && periodicTargetsRequirePerDiskSelection && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && periodicEndToEndCleanup && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse && customExtensionCleanup ? 0 : 1;
     }
 }
