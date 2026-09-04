@@ -73,6 +73,7 @@
 - (void)runPeriodicCleanup:(NSTimer *)timer;
 - (void)configurePeriodicCleanupTimer;
 - (void)stopPeriodicCleanup:(id)sender;
+- (BOOL)resourceGuardShouldPauseForCPUPercent:(double)cpuPercent residentBytes:(uint64_t)residentBytes consecutiveBreaches:(NSUInteger)consecutiveBreaches;
 @end
 
 @interface DriveSweepController (CustomExtensionCleanupRegression)
@@ -322,6 +323,12 @@ int main(void) {
         BOOL clampsLongPeriodicInterval = [controller periodicCleanupIntervalMinutes] == 10080;
         [defaults setInteger:60 forKey:@"periodicCleaningInterval"];
 
+        BOOL resourceGuardThresholds =
+            ![controller resourceGuardShouldPauseForCPUPercent:42 residentBytes:64ULL * 1024 * 1024 consecutiveBreaches:0] &&
+            ![controller resourceGuardShouldPauseForCPUPercent:81 residentBytes:64ULL * 1024 * 1024 consecutiveBreaches:1] &&
+            [controller resourceGuardShouldPauseForCPUPercent:81 residentBytes:64ULL * 1024 * 1024 consecutiveBreaches:2] &&
+            [controller resourceGuardShouldPauseForCPUPercent:4 residentBytes:800ULL * 1024 * 1024 consecutiveBreaches:2];
+
         NSString *testIdentity = @"drivesweep-harness-volume-uuid";
         [controller setVolumeRuleForIdentity:testIdentity name:@"Fixture" excluded:NO allowAutomatic:YES];
         BOOL uuidRules = [controller allowsAutomaticCleaningForIdentity:testIdentity] && ![controller isVolumeExcludedForIdentity:testIdentity];
@@ -539,6 +546,6 @@ int main(void) {
         BOOL cancelledEjectionCompletionIsFalse = ![cancelled[@"success"] boolValue] && [cancelled[@"cancelled"] boolValue];
         BOOL customExtensionCleanup = CustomExtensionCleanupRegression(controller, defaults);
         [manager removeItemAtPath:root error:nil];
-        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && migratesLegacyPeriodicSeconds && clampsShortPeriodicInterval && clampsLongPeriodicInterval && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireSeparateConsent && periodicTargetsRequirePerDiskSelection && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && periodicEndToEndCleanup && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse && customExtensionCleanup ? 0 : 1;
+        return rejectsDiskImages && dockLifecycle && dashboardReopenAfterClose && profileSnapshots && migratesLegacyPeriodicSeconds && clampsShortPeriodicInterval && clampsLongPeriodicInterval && resourceGuardThresholds && uuidRules && dashboardAnalyzeCapturesTarget && periodicTargetsRequireSeparateConsent && periodicTargetsRequirePerDiskSelection && periodicRunUsesAuthorizedTarget && periodicTimerEnabled && periodicTimerDisabled && periodicEndToEndCleanup && alertPresentationSeam && previewed && protectedRootDirectoriesAreExcludedFromPreviewTraversal && unreadableRootMetadataDoesNotFailPreview && cancelledScanTransition && cleanedWithSnapshot && identityChangeStopsCleanup && cancellationStopsCleanup && cancelledEjectionCompletionIsFalse && customExtensionCleanup ? 0 : 1;
     }
 }

@@ -2,7 +2,9 @@
 #import <UserNotifications/UserNotifications.h>
 #import <errno.h>
 #import <fts.h>
+#import <mach/mach.h>
 #import <string.h>
+#import <sys/resource.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -35,6 +37,8 @@ static NSString *const DSVolumeRulePeriodic = @"allowPeriodic";
 static NSString *const DSVolumeRuleCustomExtensionsFingerprint = @"customExtensionsFingerprint";
 static NSString *const DSVolumeRuleName = @"name";
 static NSUInteger DSPreviewFileTraversalCount = 0;
+static const double DSResourceGuardMaximumCPUPercent = 80.0;
+static const uint64_t DSResourceGuardMaximumResidentBytes = 750ULL * 1024ULL * 1024ULL;
 
 static NSArray<NSString *> *DSCleanupPreferenceKeys(void) {
     return @[
@@ -156,6 +160,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSWindow *preferencesWindow;
 @property (strong) NSTimer *scanTimer;
 @property (strong) NSTimer *periodicCleanupTimer;
+@property (strong) NSTimer *resourceMonitorTimer;
 @property (strong) NSArray<NSURL *> *eligibleVolumes;
 @property (strong) NSDictionary<NSString *, NSString *> *eligibleVolumeIdentities;
 @property (strong) NSMutableSet<NSString *> *scheduledCleanupPaths;
@@ -176,6 +181,10 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSTextField *operationStatusLabel;
 @property (strong) NSProgressIndicator *operationProgressIndicator;
 @property (strong) NSButton *cancelOperationButton;
+@property (strong) NSTextField *resourceStatusLabel;
+@property NSTimeInterval resourceSampleWallTime;
+@property NSTimeInterval resourceSampleCPUTime;
+@property NSUInteger consecutiveResourceBreaches;
 - (NSDictionary<NSString *, id> *)diskInfoForVolume:(NSURL *)url error:(NSError **)error;
 - (NSDictionary<NSString *, id> *)cleanupOptionsSnapshot;
 - (NSDictionary<NSString *, id> *)previewVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options;
@@ -188,6 +197,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (NSString *)customExtensionsFingerprintForOptions:(NSDictionary<NSString *, id> *)options;
 - (void)recordCustomExtensionAnalysisForIdentity:(NSString *)identity options:(NSDictionary<NSString *, id> *)options;
 - (BOOL)confirmCurrentCustomExtensionsForIdentity:(NSString *)identity name:(NSString *)name;
+- (BOOL)resourceGuardShouldPauseForCPUPercent:(double)cpuPercent residentBytes:(uint64_t)residentBytes consecutiveBreaches:(NSUInteger)consecutiveBreaches;
 @end
 
 @implementation DriveSweepController
@@ -247,6 +257,66 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if ([self periodicCleanupIsEnabled]) [self runPeriodicCleanup:nil];
     });
+}
+
+- (BOOL)resourceGuardShouldPauseForCPUPercent:(double)cpuPercent residentBytes:(uint64_t)residentBytes consecutiveBreaches:(NSUInteger)consecutiveBreaches {
+    BOOL exceedsCPU = cpuPercent > DSResourceGuardMaximumCPUPercent;
+    BOOL exceedsMemory = residentBytes > DSResourceGuardMaximumResidentBytes;
+    return consecutiveBreaches >= 2 && (exceedsCPU || exceedsMemory);
+}
+
+- (void)stopResourceMonitorForOperation:(DSOperationState *)operation {
+    if (!operation.periodicCleanup) return;
+    [self.resourceMonitorTimer invalidate];
+    self.resourceMonitorTimer = nil;
+    self.resourceSampleWallTime = 0;
+    self.resourceSampleCPUTime = 0;
+    self.consecutiveResourceBreaches = 0;
+}
+
+- (void)samplePeriodicResourceUsage:(NSTimer *)timer {
+    (void)timer;
+    DSOperationState *operation = self.activeOperation;
+    if (!operation || !operation.periodicCleanup || [self operationShouldStop:operation]) {
+        [self stopResourceMonitorForOperation:operation];
+        return;
+    }
+    struct rusage usage;
+    struct mach_task_basic_info taskInfo;
+    mach_msg_type_number_t taskInfoCount = MACH_TASK_BASIC_INFO_COUNT;
+    if (getrusage(RUSAGE_SELF, &usage) != 0 || task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&taskInfo, &taskInfoCount) != KERN_SUCCESS) return;
+    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    NSTimeInterval cpuTime = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1000000.0 + usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1000000.0;
+    if (self.resourceSampleWallTime <= 0) {
+        self.resourceSampleWallTime = now;
+        self.resourceSampleCPUTime = cpuTime;
+        return;
+    }
+    NSTimeInterval elapsed = now - self.resourceSampleWallTime;
+    double cpuPercent = elapsed > 0 ? ((cpuTime - self.resourceSampleCPUTime) / elapsed) * 100.0 : 0;
+    self.resourceSampleWallTime = now;
+    self.resourceSampleCPUTime = cpuTime;
+    uint64_t residentBytes = taskInfo.resident_size;
+    BOOL breach = cpuPercent > DSResourceGuardMaximumCPUPercent || residentBytes > DSResourceGuardMaximumResidentBytes;
+    self.consecutiveResourceBreaches = breach ? self.consecutiveResourceBreaches + 1 : 0;
+    NSString *resourceStatus = [NSString stringWithFormat:@"Impatto pianificazione: CPU %.0f%% · RAM %.0f MB%@", cpuPercent, residentBytes / (1024.0 * 1024.0), breach ? @" · soglia superata" : @""];
+    self.resourceStatusLabel.stringValue = resourceStatus;
+    self.resourceStatusLabel.accessibilityValue = resourceStatus;
+    if (![self resourceGuardShouldPauseForCPUPercent:cpuPercent residentBytes:residentBytes consecutiveBreaches:self.consecutiveResourceBreaches]) return;
+    @synchronized (operation) { operation.cancellationRequested = YES; }
+    NSString *warning = [NSString stringWithFormat:@"Pianificazione sospesa: DriveSweep ha superato la soglia risorse per due campioni (CPU %.0f%% / RAM %.0f MB).", cpuPercent, residentBytes / (1024.0 * 1024.0)];
+    [self setDashboardStatusMessage:warning];
+    [self notify:warning];
+    [self updateOperationUI:operation];
+    [self stopResourceMonitorForOperation:operation];
+}
+
+- (void)startResourceMonitorForOperation:(DSOperationState *)operation {
+    if (!operation.periodicCleanup) return;
+    [self stopResourceMonitorForOperation:operation];
+    self.resourceStatusLabel.stringValue = @"Impatto pianificazione: misuro CPU e RAM di DriveSweep…";
+    self.resourceMonitorTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(samplePeriodicResourceUsage:) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.resourceMonitorTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)startPeriodicCleanup:(id)sender {
@@ -343,6 +413,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self.scanTimer invalidate];
     [self.periodicCleanupTimer invalidate];
+    [self.resourceMonitorTimer invalidate];
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)hasVisibleWindows {
@@ -654,6 +725,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)finishOperation:(DSOperationState *)operation result:(NSDictionary<NSString *, id> *)result {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (operation != self.activeOperation) return;
+        [self stopResourceMonitorForOperation:operation];
         BOOL cancelled = [result[@"cancelled"] boolValue];
         NSString *message = cancelled
             ? [NSString stringWithFormat:@"Operazione annullata su %@: %lu elementi già rimossi.", operation.volumeName, (unsigned long)[result[@"removed"] unsignedIntegerValue]]
@@ -1345,6 +1417,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     }
     operation.automaticCleanup = mountAutomatic || periodicAutomatic;
     operation.periodicCleanup = periodicAutomatic;
+    [self startResourceMonitorForOperation:operation];
     [self.scheduledCleanupPaths addObject:volume.path];
     [self setDashboardStatusMessage:[NSString stringWithFormat:@"Pulizia di %@ in corso…", volume.lastPathComponent]];
     [self rebuildMenu];
@@ -1738,7 +1811,14 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         self.cancelOperationButton.hidden = YES;
         [content addSubview:self.cancelOperationButton];
 
-        self.dashboardScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 24, 592, 360)];
+        self.resourceStatusLabel = [NSTextField labelWithString:@"Impatto pianificazione: guardia CPU/RAM pronta"];
+        self.resourceStatusLabel.frame = NSMakeRect(24, 378, 592, 16);
+        self.resourceStatusLabel.font = [NSFont systemFontOfSize:10];
+        self.resourceStatusLabel.textColor = NSColor.secondaryLabelColor;
+        self.resourceStatusLabel.accessibilityLabel = @"Impatto hardware della pianificazione";
+        [content addSubview:self.resourceStatusLabel];
+
+        self.dashboardScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 24, 592, 346)];
         self.dashboardScrollView.hasVerticalScroller = YES;
         self.dashboardScrollView.autohidesScrollers = YES;
         self.dashboardScrollView.borderType = NSBezelBorder;

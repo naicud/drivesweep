@@ -20,6 +20,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 - Can run a periodic background cleanup at a chosen interval from 5 minutes to 7 days. It is off by default, starts and stops from the dashboard or menu bar, and includes only separately selected VolumeUUIDs.
 - Opens a visible dashboard immediately, appears in the Dock, and keeps a broom menu-bar icon for quick actions and a non-destructive **Analyze** report for each drive.
 - Shows the disk, current category, a redacted folder name, and completed categories while it works. It never invents a file-count or byte-count percentage it cannot know.
+- Monitors CPU and resident memory for **DriveSweep itself** during scheduled cleanup. Two consecutive samples above 80% of one CPU core or 750 MB RAM request a safe stop and show a warning; it never inspects, throttles, or kills other Mac processes.
 - Lets you cancel before the next filesystem item. If macOS is still opening a large folder, DriveSweep says so and waits rather than forcing the filesystem.
 - Uses one physical filesystem traversal for the file-metadata preview instead of rescanning the same drive for each default category. Protected root metadata folders are counted separately, so an inaccessible `.TemporaryItems` folder does not make a normal analysis fail.
 - Removes AppleDouble `._*` files while preserving extensions you add to the AppleDouble whitelist.
@@ -42,6 +43,7 @@ Analyze is always non-destructive: it reports candidates by category, AppleDoubl
 - Cleanup rechecks the selected identity before each destructive category and stops later categories if the mount changed. **Clean and eject** rechecks it again immediately before ejecting.
 - Traversals do not follow symlinks, do not cross into a different filesystem, skip application-package descendants, and reject unsafe root-level targets such as symlinks or mountpoints.
 - Mount-time and periodic cleanup independently recheck their global setting and their UUID-specific consent when queued work starts. Stopping a periodic run prevents later destructive categories from starting.
+- The resource guard monitors only scheduled work. A single brief resource spike is reported but does not stop cleanup; sustained CPU or memory pressure requests cancellation before the next filesystem category.
 - The Dashboard and Preferences windows hide rather than being destroyed when closed, so they can safely be reopened from the Dock or menu bar.
 
 These boundaries reduce the chance of acting on the wrong target; they do not make metadata deletion reversible. Keep backups and use **Analyze** before cleanup.
@@ -57,7 +59,7 @@ These boundaries reduce the chance of acting on the wrong target; they do not ma
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.4.7` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.4.8` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -89,10 +91,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.4.7`, the published SHA-256 is:
+For `v0.4.8`, the published SHA-256 is:
 
 ```text
-5edbd8b7ccb2cc6e80e21c096f98bc37d3ade018082a3cbc65f3e7a0a08ae21e
+782afea7b464d567b94e7a5b2c1d0b361154444193515bcb18f759aa62e6d763
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.
