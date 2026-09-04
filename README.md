@@ -33,7 +33,7 @@ It deliberately touches only physical external, writable volumes. It ignores the
 
 Automatic cleanup is **off by default**. It never runs merely because a drive is external: you must enable the global automatic-cleanup preference **and** explicitly allow automatic cleaning for that drive's stable VolumeUUID in its dashboard card. DriveSweep waits briefly after mount, rechecks the identity and consent, then cleans the approved mount once. When you finish copying, use **Clean and eject** for a final pass.
 
-Periodic cleanup is a separate, opt-in setting in **Preferences**. It does not require mount-time cleanup to be enabled. Choose an interval in minutes, add only the intended drives with **Includi nella pianificazione** in the card’s Actions menu, then use **Avvia pianificazione** from the dashboard or menu bar. If exact custom extensions are enabled, first run **Analyze** on that drive and choose **Conferma file personalizzati dopo analisi**; changing the extension list invalidates that consent. It starts one background pass shortly after launch and repeats at that interval. It uses per-drive UUID consent, exclusion, mount-identity, and cancellation checks; it never ejects a disk. Stop it before copying files to a drive.
+Periodic cleanup is a separate, opt-in setting in **Preferences**. It does not require mount-time cleanup to be enabled. **Avvia pianificazione** opens a configuration popup: choose the interval in minutes, review the selected drives, and confirm. It never starts a cleanup immediately after confirmation; the Dashboard shows a live **Prossima pulizia tra…** countdown. Add only the intended drives with **Includi nella pianificazione** in the card’s Actions menu. If exact custom extensions are enabled, first run **Analyze** on that drive and choose **Conferma file personalizzati dopo analisi**; changing the extension list invalidates that consent. It uses per-drive UUID consent, exclusion, mount-identity, and cancellation checks; it never ejects a disk. Stop it before copying files to a drive.
 
 Analyze is always non-destructive: it reports candidates by category, AppleDouble files protected by the whitelist, and scan errors before you choose a cleanup action. Removing `._*` files may discard macOS-only metadata such as custom icons or legacy resource forks. The default **Cross-platform sharing** profile enables AppleDouble and `.DS_Store`; **Preserve Mac metadata** removes only `.DS_Store`; **Custom** preserves your individual toggles. All advanced categories require an explicit opt-in. Use the AppleDouble extension whitelist for types whose resource metadata must be preserved.
 
@@ -55,11 +55,11 @@ These boundaries reduce the chance of acting on the wrong target; they do not ma
 3. If AppleDouble metadata matters for a format, add its extension to the whitelist in **Preferences** and analyze again.
 4. Choose **Clean now** only after confirming the report, or choose **Clean and eject** after the last file copy.
 5. Keep automatic cleanup off unless you have tested the exact drive. If you enable it, allow it separately on that drive's dashboard card.
-6. To use periodic cleanup, enter the interval in minutes in **Preferences**, choose **Includi nella pianificazione** on the intended drive’s Actions menu, and—if custom extensions are enabled—Analyze then confirm them for that drive. Start it from the dashboard or menu bar. The broom icon states whether it is active and exposes an immediate one-pass action.
+6. To use periodic cleanup, choose **Includi nella pianificazione** on the intended drive’s Actions menu, then select **Avvia pianificazione**. Set the interval in the popup and confirm; the Dashboard immediately shows the next scheduled time. If custom extensions are enabled, Analyze then confirm them for that drive. The broom icon exposes **Configura pianificazione…** and an immediate one-pass action.
 
 ## Security and Apple verification
 
-DriveSweep **is free**, but the `v0.4.8` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
+DriveSweep **is free**, but the `v0.4.9` public build is **not notarized by Apple**. That is why macOS can show “Apple could not verify that this app is free of malware” for a DMG downloaded from GitHub. This warning is about Apple's distribution verification process; it is not a report that DriveSweep is malware.
 
 You can use it without paying for an Apple Developer membership. Choose one of the local-install methods in [Installation](docs/INSTALLATION.md), review the source, and verify the published SHA-256 before trusting a release. Details, limitations, and the precise role of quarantine are in [Security](docs/SECURITY.md).
 
@@ -91,10 +91,10 @@ This does **not** make DriveSweep Apple-notarized or certify it as safe. See the
 
 Download `DriveSweep.dmg` from the [GitHub Releases page](https://github.com/naicud/drivesweep/releases), open it, and move the app to Applications.
 
-For `v0.4.8`, the published SHA-256 is:
+For `v0.4.9`, the published SHA-256 is:
 
 ```text
-782afea7b464d567b94e7a5b2c1d0b361154444193515bcb18f759aa62e6d763
+3a04405a16e143b18934151ede2f119b4de031078f9a643a75c2ffd29dcfdd1f
 ```
 
 After copying the application, use the one-time Control-click → **Open** route or remove quarantine as documented in [Installation](docs/INSTALLATION.md#dmg). Do not bypass the warning for a DMG you did not download from the official [DriveSweep releases](https://github.com/naicud/drivesweep/releases) page.
@@ -153,7 +153,7 @@ DriveSweep intentionally refuses internal disks, disk images, network shares, re
 
 ### How does periodic cleanup work?
 
-It is not enabled automatically. Set the minutes in **Preferences**, choose **Includi nella pianificazione** for the exact drive from its Actions menu, then choose **Avvia pianificazione**. It does not depend on **Pulisci automaticamente dopo il mount**. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. **Ferma pianificazione** stops future work and requests cancellation before the next destructive category.
+It is not enabled automatically. Choose **Includi nella pianificazione** for the exact drive from its Actions menu, then choose **Avvia pianificazione** and set minutes in its configuration popup. The Dashboard displays the remaining time until the first and every subsequent run. It does not depend on **Pulisci automaticamente dopo il mount**. If another cleanup is already running, the periodic pass skips that tick instead of running in parallel. **Ferma pianificazione** stops future work and requests cancellation before the next destructive category.
 
 ### I changed my mind while it is running
 

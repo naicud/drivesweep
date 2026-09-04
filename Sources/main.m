@@ -3,6 +3,7 @@
 #import <errno.h>
 #import <fts.h>
 #import <mach/mach.h>
+#import <math.h>
 #import <string.h>
 #import <sys/resource.h>
 #import <sys/stat.h>
@@ -160,6 +161,8 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSWindow *preferencesWindow;
 @property (strong) NSTimer *scanTimer;
 @property (strong) NSTimer *periodicCleanupTimer;
+@property (strong) NSTimer *scheduleCountdownTimer;
+@property (strong) NSDate *nextPeriodicCleanupDate;
 @property (strong) NSTimer *resourceMonitorTimer;
 @property (strong) NSArray<NSURL *> *eligibleVolumes;
 @property (strong) NSDictionary<NSString *, NSString *> *eligibleVolumeIdentities;
@@ -182,6 +185,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSProgressIndicator *operationProgressIndicator;
 @property (strong) NSButton *cancelOperationButton;
 @property (strong) NSTextField *resourceStatusLabel;
+@property (strong) NSTextField *scheduleCountdownLabel;
 @property NSTimeInterval resourceSampleWallTime;
 @property NSTimeInterval resourceSampleCPUTime;
 @property NSUInteger consecutiveResourceBreaches;
@@ -198,6 +202,8 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)recordCustomExtensionAnalysisForIdentity:(NSString *)identity options:(NSDictionary<NSString *, id> *)options;
 - (BOOL)confirmCurrentCustomExtensionsForIdentity:(NSString *)identity name:(NSString *)name;
 - (BOOL)resourceGuardShouldPauseForCPUPercent:(double)cpuPercent residentBytes:(uint64_t)residentBytes consecutiveBreaches:(NSUInteger)consecutiveBreaches;
+- (void)configurePeriodicCleanupWithMinutes:(NSInteger)minutes;
+- (NSString *)nextPeriodicCleanupLabelAtDate:(NSDate *)date;
 @end
 
 @implementation DriveSweepController
@@ -250,13 +256,48 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)configurePeriodicCleanupTimer {
     [self.periodicCleanupTimer invalidate];
     self.periodicCleanupTimer = nil;
-    if (![self periodicCleanupIsEnabled]) return;
+    if (![self periodicCleanupIsEnabled]) {
+        self.nextPeriodicCleanupDate = nil;
+        [self.scheduleCountdownTimer invalidate];
+        self.scheduleCountdownTimer = nil;
+        return;
+    }
+    self.nextPeriodicCleanupDate = [NSDate dateWithTimeIntervalSinceNow:[self periodicCleanupInterval]];
     self.periodicCleanupTimer = [NSTimer scheduledTimerWithTimeInterval:[self periodicCleanupInterval]
         target:self selector:@selector(runPeriodicCleanup:) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.periodicCleanupTimer forMode:NSRunLoopCommonModes];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if ([self periodicCleanupIsEnabled]) [self runPeriodicCleanup:nil];
-    });
+    [self.scheduleCountdownTimer invalidate];
+    self.scheduleCountdownTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateScheduleCountdown:) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.scheduleCountdownTimer forMode:NSRunLoopCommonModes];
+    [self updateScheduleCountdown:nil];
+}
+
+- (NSString *)nextPeriodicCleanupLabelAtDate:(NSDate *)date {
+    if (![self periodicCleanupIsEnabled] || !self.nextPeriodicCleanupDate) return @"Prossima pulizia: pianificazione ferma";
+    NSTimeInterval remaining = MAX(0, [self.nextPeriodicCleanupDate timeIntervalSinceDate:date]);
+    NSInteger seconds = (NSInteger)ceil(remaining);
+    NSInteger hours = seconds / 3600;
+    NSInteger minutes = (seconds % 3600) / 60;
+    NSInteger secondsPart = seconds % 60;
+    NSString *duration = hours > 0 ? [NSString stringWithFormat:@"%ldh %02ldm", (long)hours, (long)minutes] : [NSString stringWithFormat:@"%ldm %02lds", (long)minutes, (long)secondsPart];
+    return [NSString stringWithFormat:@"Prossima pulizia tra %@", duration];
+}
+
+- (void)updateScheduleCountdown:(NSTimer *)timer {
+    (void)timer;
+    NSString *label = [self nextPeriodicCleanupLabelAtDate:[NSDate date]];
+    self.scheduleCountdownLabel.stringValue = label;
+    self.scheduleCountdownLabel.accessibilityValue = label;
+}
+
+- (void)configurePeriodicCleanupWithMinutes:(NSInteger)minutes {
+    NSInteger clampedMinutes = MAX(5, MIN(minutes ?: 60, 10080));
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setInteger:clampedMinutes forKey:DSPeriodicCleaningInterval];
+    [defaults setBool:YES forKey:DSPeriodicCleaning];
+    [self configurePeriodicCleanupTimer];
+    [self setDashboardStatusMessage:[NSString stringWithFormat:@"Pianificazione avviata: ogni %@. %@.", [self periodicCleanupIntervalLabel], [self nextPeriodicCleanupLabelAtDate:[NSDate date]]]];
+    [self rebuildMenu];
 }
 
 - (BOOL)resourceGuardShouldPauseForCPUPercent:(double)cpuPercent residentBytes:(uint64_t)residentBytes consecutiveBreaches:(NSUInteger)consecutiveBreaches {
@@ -320,11 +361,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (void)startPeriodicCleanup:(id)sender {
-    (void)sender;
-    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:DSPeriodicCleaning];
-    [self configurePeriodicCleanupTimer];
-    [self setDashboardStatusMessage:[NSString stringWithFormat:@"Pianificazione avviata: ogni %@.", [self periodicCleanupIntervalLabel]]];
-    [self rebuildMenu];
+    [self showPeriodicScheduleConfiguration:sender];
 }
 
 - (void)stopPeriodicCleanup:(id)sender {
@@ -332,6 +369,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DSPeriodicCleaning];
     [self.periodicCleanupTimer invalidate];
     self.periodicCleanupTimer = nil;
+    [self.scheduleCountdownTimer invalidate];
+    self.scheduleCountdownTimer = nil;
+    self.nextPeriodicCleanupDate = nil;
     if (self.activeOperation.periodicCleanup) {
         @synchronized (self.activeOperation) { self.activeOperation.cancellationRequested = YES; }
     }
@@ -344,8 +384,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     else [self startPeriodicCleanup:sender];
 }
 
-- (NSArray<DSVolumeTarget *> *)periodicCleanupTargets {
-    if (![self periodicCleanupIsEnabled] || self.activeOperation) return @[];
+- (NSArray<DSVolumeTarget *> *)configuredPeriodicCleanupTargets {
     NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
     NSMutableArray<DSVolumeTarget *> *targets = [NSMutableArray array];
     for (NSURL *url in self.eligibleVolumes) {
@@ -355,6 +394,42 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [targets addObject:[[DSVolumeTarget alloc] initWithVolumeURL:url mountIdentity:identity]];
     }
     return targets.copy;
+}
+
+- (NSArray<DSVolumeTarget *> *)periodicCleanupTargets {
+    if (![self periodicCleanupIsEnabled] || self.activeOperation) return @[];
+    return [self configuredPeriodicCleanupTargets];
+}
+
+- (void)showPeriodicScheduleConfiguration:(id)sender {
+    (void)sender;
+    NSArray<DSVolumeTarget *> *targets = [self configuredPeriodicCleanupTargets];
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (DSVolumeTarget *target in targets) [names addObject:target.volumeURL.lastPathComponent ?: @"Disco esterno"];
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Configura pianificazione";
+    alert.informativeText = targets.count
+        ? [NSString stringWithFormat:@"La pulizia partirà solo sui %lu dischi selezionati: %@. Non parte subito.", (unsigned long)targets.count, [names componentsJoinedByString:@", "]]
+        : @"Nessun disco è selezionato: puoi comunque avviare il timer, ma non verrà pulito nulla finché non includerai un disco dal menu Azioni.";
+    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 52)];
+    NSTextField *label = [NSTextField labelWithString:@"Ogni quanti minuti?"];
+    label.frame = NSMakeRect(0, 28, 180, 20);
+    [accessory addSubview:label];
+    NSTextField *minutes = [[NSTextField alloc] initWithFrame:NSMakeRect(192, 24, 80, 24)];
+    minutes.integerValue = [self periodicCleanupIntervalMinutes];
+    minutes.identifier = @"scheduleConfigurationInterval";
+    minutes.accessibilityLabel = @"Intervallo pianificazione in minuti";
+    [accessory addSubview:minutes];
+    NSTextField *hint = [NSTextField labelWithString:@"Da 5 a 10.080 minuti · il countdown sarà visibile in Dashboard."];
+    hint.frame = NSMakeRect(0, 2, 360, 18);
+    hint.font = [NSFont systemFontOfSize:11];
+    hint.textColor = NSColor.secondaryLabelColor;
+    [accessory addSubview:hint];
+    alert.accessoryView = accessory;
+    [alert addButtonWithTitle:@"Avvia pianificazione"];
+    [alert addButtonWithTitle:@"Annulla"];
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([alert runModal] == NSAlertFirstButtonReturn) [self configurePeriodicCleanupWithMinutes:minutes.integerValue];
 }
 
 - (void)cleanNextPeriodicTarget:(NSArray<DSVolumeTarget *> *)targets index:(NSUInteger)index {
@@ -370,6 +445,10 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)runPeriodicCleanup:(NSTimer *)timer {
     (void)timer;
+    if ([self periodicCleanupIsEnabled]) {
+        self.nextPeriodicCleanupDate = [NSDate dateWithTimeIntervalSinceNow:[self periodicCleanupInterval]];
+        [self updateScheduleCountdown:nil];
+    }
     NSArray<DSVolumeTarget *> *targets = [self periodicCleanupTargets];
     if (targets.count) [self cleanNextPeriodicTarget:targets index:0];
 }
@@ -1536,6 +1615,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMenuItem *periodicToggle = [[NSMenuItem alloc] initWithTitle:([self periodicCleanupIsEnabled] ? @"Ferma pianificazione" : @"Avvia pianificazione") action:@selector(togglePeriodicCleanup:) keyEquivalent:@""];
     periodicToggle.target = self;
     [menu addItem:periodicToggle];
+    NSMenuItem *periodicConfigure = [[NSMenuItem alloc] initWithTitle:@"Configura pianificazione…" action:@selector(showPeriodicScheduleConfiguration:) keyEquivalent:@""];
+    periodicConfigure.target = self;
+    [menu addItem:periodicConfigure];
     NSMenuItem *periodicNow = [[NSMenuItem alloc] initWithTitle:@"Esegui pianificazione ora" action:@selector(runPeriodicCleanup:) keyEquivalent:@""];
     periodicNow.target = self; periodicNow.enabled = [self periodicCleanupIsEnabled] && !self.activeOperation;
     [menu addItem:periodicNow];
@@ -1797,28 +1879,34 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [content addSubview:self.scheduleButton];
 
         self.operationStatusLabel = [NSTextField labelWithString:@""];
-        self.operationStatusLabel.frame = NSMakeRect(330, 414, 286, 20);
+        self.operationStatusLabel.frame = NSMakeRect(24, 385, 592, 18);
         self.operationStatusLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
         self.operationStatusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         [content addSubview:self.operationStatusLabel];
-        self.operationProgressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(330, 398, 174, 10)];
+        self.operationProgressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(24, 370, 470, 10)];
         self.operationProgressIndicator.indeterminate = YES;
         self.operationProgressIndicator.hidden = YES;
         [content addSubview:self.operationProgressIndicator];
         self.cancelOperationButton = [NSButton buttonWithTitle:@"Annulla" target:self action:@selector(cancelActiveOperation:)];
-        self.cancelOperationButton.frame = NSMakeRect(514, 393, 96, 24);
+        self.cancelOperationButton.frame = NSMakeRect(504, 364, 106, 24);
         self.cancelOperationButton.bezelStyle = NSBezelStyleRounded;
         self.cancelOperationButton.hidden = YES;
         [content addSubview:self.cancelOperationButton];
 
+        self.scheduleCountdownLabel = [NSTextField labelWithString:@"Prossima pulizia: pianificazione ferma"];
+        self.scheduleCountdownLabel.frame = NSMakeRect(24, 348, 592, 16);
+        self.scheduleCountdownLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+        self.scheduleCountdownLabel.accessibilityLabel = @"Prossima pulizia pianificata";
+        [content addSubview:self.scheduleCountdownLabel];
+
         self.resourceStatusLabel = [NSTextField labelWithString:@"Impatto pianificazione: guardia CPU/RAM pronta"];
-        self.resourceStatusLabel.frame = NSMakeRect(24, 378, 592, 16);
+        self.resourceStatusLabel.frame = NSMakeRect(24, 332, 592, 14);
         self.resourceStatusLabel.font = [NSFont systemFontOfSize:10];
         self.resourceStatusLabel.textColor = NSColor.secondaryLabelColor;
         self.resourceStatusLabel.accessibilityLabel = @"Impatto hardware della pianificazione";
         [content addSubview:self.resourceStatusLabel];
 
-        self.dashboardScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 24, 592, 346)];
+        self.dashboardScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 24, 592, 300)];
         self.dashboardScrollView.hasVerticalScroller = YES;
         self.dashboardScrollView.autohidesScrollers = YES;
         self.dashboardScrollView.borderType = NSBezelBorder;
@@ -1921,6 +2009,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)refreshDashboard {
     if (!self.dashboardStatusLabel || !self.dashboardDocumentView) return;
     self.scheduleButton.title = [self periodicCleanupIsEnabled] ? @"Ferma pianificazione" : @"Avvia pianificazione";
+    [self updateScheduleCountdown:nil];
     NSArray<NSURL *> *volumes = self.eligibleVolumes;
     [self.dashboardVolumeTargets removeAllObjects];
     for (NSView *subview in [self.dashboardDocumentView.subviews copy]) [subview removeFromSuperview];
@@ -2108,7 +2197,10 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     if ([DSCleanupPreferenceKeys() containsObject:sender.identifier]) {
         [[NSUserDefaults standardUserDefaults] setObject:DSProfileCustom forKey:DSCleanupProfile];
     }
-    if ([sender.identifier isEqualToString:DSAutomaticCleaning] || [sender.identifier isEqualToString:DSPeriodicCleaning]) {
+    if ([sender.identifier isEqualToString:DSPeriodicCleaning] && sender.state == NSControlStateValueOn) {
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DSPeriodicCleaning];
+        [self showPeriodicScheduleConfiguration:sender];
+    } else if ([sender.identifier isEqualToString:DSAutomaticCleaning] || [sender.identifier isEqualToString:DSPeriodicCleaning]) {
         [self configurePeriodicCleanupTimer];
     }
     [self refreshPreferenceControls];
