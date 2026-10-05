@@ -7,6 +7,7 @@
 @interface DSLease : NSObject
 @property int descriptor;
 + (instancetype)acquire:(NSString *)name;
+- (void)invalidate;
 @end
 @implementation DSLease
 - (instancetype)init { if ((self = [super init])) _descriptor = -1; return self; }
@@ -22,7 +23,8 @@
     lease.descriptor = fd;
     return lease;
 }
-- (void)dealloc { if (_descriptor >= 0) close(_descriptor); }
+- (void)invalidate { if (_descriptor >= 0) { close(_descriptor); _descriptor = -1; } }
+- (void)dealloc { [self invalidate]; }
 @end
 
 static double DSCPUPercent(uint64_t current, uint64_t previous, double elapsed) {

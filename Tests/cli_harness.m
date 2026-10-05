@@ -37,7 +37,18 @@ int main(void) {
         if (contender == 0) { close(lease.descriptor); _exit([DSLease acquire:lockName] == nil ? 0 : 1); }
         int status = 0; waitpid(contender, &status, 0);
         Check(WIFEXITED(status) && WEXITSTATUS(status) == 0, @"Exclusive lock across processes");
-        lease = nil; lease = [DSLease acquire:lockName]; Check(lease != nil, @"Lock released after owner closes"); lease = nil;
+        [lease invalidate]; lease = nil; lease = [DSLease acquire:lockName]; Check(lease != nil, @"Lock released after owner closes"); [lease invalidate]; lease = nil;
+        DSLease *cleanupLease = [DSLease acquire:@"cleanup"];
+        if (cleanupLease) {
+            NSDictionary *busy = [controller cleanVolumeOnWorker:[NSURL fileURLWithPath:@"/"] expectedMountIdentity:@"invalid" options:[controller cleanupOptionsSnapshot] operation:nil];
+            Check([busy[@"busy"] boolValue], @"Engine rejects concurrent app/CLI cleanup before target access");
+            [cleanupLease invalidate];
+            NSDictionary *rejected = [controller cleanVolumeOnWorker:[NSURL fileURLWithPath:@"/"] expectedMountIdentity:@"invalid" options:[controller cleanupOptionsSnapshot] operation:nil];
+            Check(![rejected[@"success"] boolValue], @"Internal target rejected by shared engine");
+            cleanupLease = [DSLease acquire:@"cleanup"];
+            Check(cleanupLease != nil, @"Early rejection releases cleanup lock before autorelease pool drains");
+            [cleanupLease invalidate];
+        } else puts("SKIP: existing user cleanup owns engine lock");
         Check(fabs(DSCPUPercent(2000000000, 1000000000, 2) - 50) < .001 && DSCPUPercent(1, 2, 1) == 0 && DSCPUPercent(2, 1, 0) == 0, @"Monotonic CPU delta and reset handling");
         pid_t child = fork();
         if (child == 0) { execl("/bin/sleep", "sleep", "30", NULL); _exit(127); }

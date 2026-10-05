@@ -7,6 +7,10 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    env:
+      # Ephemeral CI runners cannot retain the local certificate between builds.
+      # Distribution with persistent privacy consent requires Developer ID signing.
+      SIGNING_MODE: adhoc
     steps:
       - uses: actions/checkout@v4
       - name: Test native app, shared engine and CLI

@@ -1,10 +1,12 @@
 # Sicurezza, dati e distribuzione
 
-DriveSweep 3.1.0 è gratuito, Apache-2.0. App e CLI usano lo stesso motore locale senza rete, account, telemetria, helper privilegiati o servizi nascosti. Il Cask resta alla release pubblica 0.4.11 fino alla pubblicazione verificata della nuova versione.
+DriveSweep 3.1.1 è gratuito, Apache-2.0. App e CLI usano lo stesso motore locale senza rete, account, telemetria, helper privilegiati o servizi nascosti. Il Cask resta alla release pubblica 0.4.11 fino alla pubblicazione verificata della nuova versione.
 
 ## Firma e provenienza
 
-Firma ad-hoc: `codesign --verify --deep --strict` verifica integrità, non equivale a Developer ID, notarizzazione o revisione antivirus di Apple. [Installazione](INSTALLATION.md) distingue checksum locali e pubblici: l'hash 0.4.11 non vale per 3.1.
+Le build locali usano un certificato persistente in un keychain dedicato dell'utente. Il requisito designato vincola bundle ID e impronta del certificato: due build diverse della stessa identità soddisfano il medesimo requisito TCC; una copia firmata con un altro certificato non lo soddisfa. Nessuna scrittura nel database TCC, richiesta di privilegi root o modifica della fiducia di sistema. Il primo passaggio da ad hoc richiede un nuovo consenso macOS. La CI e le vecchie release sono ad hoc e non mantengono questa identità tra build.
+
+`codesign --verify --deep --strict` verifica integrità, non equivale a Developer ID, notarizzazione o revisione antivirus di Apple. [Installazione](INSTALLATION.md) descrive conservazione dell'identità e distingue checksum locali e pubblici: l'hash 0.4.11 non vale per 3.1.
 
 ## Target e identità
 

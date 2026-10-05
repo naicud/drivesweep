@@ -1791,6 +1791,11 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options operation:(DSOperationState *)operation {
     __attribute__((objc_precise_lifetime)) DSLease *lease = [DSLease acquire:@"cleanup"];
     if (!lease) return @{ @"success": @NO, @"busy": @YES, @"removed": @0, @"errors": @[@"Un'altra istanza app/CLI sta già pulendo. Riprova quando termina."] };
+    @try { return [self cleanUnlockedVolume:volume expectedMountIdentity:expectedMountIdentity options:options operation:operation]; }
+    @finally { [lease invalidate]; }
+}
+
+- (NSDictionary<NSString *, id> *)cleanUnlockedVolume:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options operation:(DSOperationState *)operation {
     NSError *eligibilityError = nil;
     if (![self isEligibleExternalVolume:volume error:&eligibilityError]) {
         NSString *message = eligibilityError.localizedDescription ?: @"Il disco non è più un volume esterno fisico scrivibile.";

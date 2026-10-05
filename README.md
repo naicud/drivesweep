@@ -2,7 +2,7 @@
 
 Pulizia dei metadati macOS sui **dischi esterni fisici scrivibili**, con app nativa e CLI che condividono motore, preferenze e consensi per VolumeUUID. Gratis, Apache-2.0, senza account, abbonamenti, telemetria o servizi esterni.
 
-Sorgente: **3.1.0, build 21**. Il Cask conserva la release pubblicata **0.4.11**: la nuova build locale non è una release GitHub già pubblicata. Homebrew non fornisce ancora la 3.1.
+Sorgente: **3.1.1, build 22**. Il Cask conserva la release pubblicata **0.4.11**: la nuova build locale non è una release GitHub già pubblicata. Homebrew non fornisce ancora la 3.1.
 
 ## App e CLI
 
@@ -75,4 +75,4 @@ UUID e idoneità ricontrollati prima delle azioni. Rifiutati: interni, immagini,
 - [Analisi di mercato](docs/market-analysis-v3.md): competitor e fonti primarie.
 - [Ricerca BlueHarvest](docs/research-blueharvest-compatibility.md): comportamento documentato e differenze.
 
-`make test` verifica bundle, sicurezza, IPC e CLI, senza pulire dati utente. Firma **ad-hoc**, senza Developer ID o notarizzazione Apple. I test locali non dimostrano superiorità su ogni competitor o assenza assoluta di blocchi su supporti guasti. Licenza [Apache-2.0](LICENSE).
+`make test` verifica bundle, sicurezza, IPC, CLI e persistenza dell'identità di firma, senza pulire dati utente. Le build locali riusano un **certificato persistente** per conservare i consensi macOS tra aggiornamenti; CI e vecchie release restano ad hoc. [Dettagli e primo consenso](docs/INSTALLATION.md#firma-e-primo-utilizzo). Nessuna notarizzazione Apple. I test locali non dimostrano superiorità su ogni competitor o assenza assoluta di blocchi su supporti guasti. Licenza [Apache-2.0](LICENSE).

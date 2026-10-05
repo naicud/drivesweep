@@ -1,8 +1,11 @@
 APP_NAME := DriveSweep
 BUILD_DIR := build
 APP := $(BUILD_DIR)/$(APP_NAME).app
+SIGNING_MODE ?= local
+SIGNING_IDENTITY ?=
+SIGNING_DIR ?= $(HOME)/Library/Application Support/DriveSweep/Signing
 
-.PHONY: build run clean dmg test cleanup-harness v3-harness cli-harness
+.PHONY: build sign run clean dmg test cleanup-harness v3-harness cli-harness
 
 build:
 	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
@@ -12,8 +15,12 @@ build:
 	cp Scripts/drivesweep "$(APP)/Contents/Resources/drivesweep"
 	chmod 755 "$(APP)/Contents/Resources/drivesweep"
 	/usr/sbin/dot_clean -m "$(APP)"
-	codesign --force --deep --sign - "$(APP)"
+	$(MAKE) sign
 	/usr/sbin/dot_clean -m "$(APP)"
+	codesign --verify --deep --strict "$(APP)"
+
+sign:
+	python3 Scripts/sign_app.py "$(APP)" --mode "$(SIGNING_MODE)" --identity "$(SIGNING_IDENTITY)" --directory "$(SIGNING_DIR)"
 	codesign --verify --deep --strict "$(APP)"
 
 run: build
@@ -46,6 +53,7 @@ test: build cleanup-harness v3-harness cli-harness
 	"$(BUILD_DIR)/v3-harness"
 	"$(BUILD_DIR)/cli-harness"
 	python3 Tests/cli_integration.py
+	python3 Tests/signing_integration.py
 
 clean:
 	rm -rf "$(BUILD_DIR)"

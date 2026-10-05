@@ -273,7 +273,7 @@ static DSCLIController *DSCLIMakeController(void) {
 static int DSRunCLI(NSArray<NSString *> *arguments) {
     if (!arguments.count || [arguments isEqual:@[@"--help"]] || [arguments isEqual:@[@"help"]]) { fputs(DSCLIHelp, stdout); return 0; }
     if ([arguments isEqual:@[@"--version"]]) {
-        printf("DriveSweep %s\n", [[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"3.1.0" UTF8String]); return 0;
+        printf("DriveSweep %s\n", [[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"3.1.1" UTF8String]); return 0;
     }
     NSString *error = nil;
     NSDictionary *parsed = DSCLIParse(arguments, &error);
@@ -348,7 +348,7 @@ static int DSRunCLI(NSArray<NSString *> *arguments) {
             NSDictionary *report = DSCLIRunOperation(controller, target, YES, YES);
             [reports addObject:@{ @"volume": target.volumeURL.path, @"report": report }]; success &= [report[@"success"] boolValue];
         }
-        DSCLIOutput(@{ @"success": @(success && !DSCLIInterrupted), @"reports": reports }, json);
+        DSCLIOutput(@{ @"success": success && !DSCLIInterrupted ? @YES : @NO, @"reports": reports }, json);
         return DSCLIInterrupted ? 128 + DSCLIInterrupted : success ? 0 : 1;
     }
     if ([command isEqual:@"daemon"]) {
@@ -457,7 +457,7 @@ static int DSRunCLI(NSArray<NSString *> *arguments) {
         [reports addObject:@{ @"volume": item.volumeURL.path, @"uuid": item.mountIdentity, @"report": report }];
         success &= [report[@"success"] boolValue];
     }
-    NSDictionary *output = @{ @"success": @(success && !DSCLIInterrupted), @"reports": reports, @"byteMeaning": @"Somma logica dei soli file candidati; non spazio recuperabile garantito." };
+    NSDictionary *output = @{ @"success": success && !DSCLIInterrupted ? @YES : @NO, @"reports": reports, @"byteMeaning": @"Somma logica dei soli file candidati; non spazio recuperabile garantito." };
     if (flags[@"export"]) {
         NSData *data = [NSJSONSerialization dataWithJSONObject:output options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
         NSError *writeError = nil;

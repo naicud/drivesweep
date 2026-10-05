@@ -1,6 +1,6 @@
 # Installazione di DriveSweep 3.1
 
-macOS 13+, Apple Silicon/Intel. App e CLI nello stesso bundle universale, versione locale 3.1.0 (21). Il Cask pubblico resta 0.4.11 e non contiene la CLI 3.1.
+macOS 13+, Apple Silicon/Intel. App e CLI nello stesso bundle universale, versione locale 3.1.1 (22). Il Cask pubblico resta 0.4.11 e non contiene la CLI 3.1.
 
 ## Sorgente e aggiornamento
 
@@ -61,7 +61,13 @@ Homebrew installa la versione pubblicata, non la 3.1 locale. Il checksum locale 
 
 ## Firma e primo utilizzo
 
-Firma ad-hoc, senza notarizzazione Apple. Un download può ricevere un avviso Gatekeeper: verifica provenienza e integrità e consulta [Sicurezza](SECURITY.md) e la [guida Apple](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-identified-developer-mh40616/mac). Non è necessario disattivare globalmente le protezioni.
+Le build locali usano per default un certificato persistente creato da `Scripts/sign_app.py`. Certificato, keychain dedicato e password restano in `~/Library/Application Support/DriveSweep/Signing`, fuori dal repository, con accesso limitato all'utente. Ogni ricompilazione riusa il certificato: il requisito di identità macOS resta legato al bundle ID e al certificato, anziché all'hash variabile dell'eseguibile. Non cancellare questa cartella durante gli aggiornamenti; conservarla permette di mantenere l'identità tra build. Il certificato locale non modifica la fiducia di sistema e non equivale a Developer ID o notarizzazione.
+
+Passando dalla vecchia firma ad hoc alla nuova firma locale, concedi nuovamente l'accesso ai volumi rimovibili una volta. Un consenso resta riutilizzabile finché identità e autorizzazione macOS restano valide. Se avevi concesso Accesso completo al disco alla vecchia build, rimuovi la vecchia voce e aggiungi la nuova copia in Impostazioni di Sistema → Privacy e sicurezza → Accesso completo al disco; il permesso per i volumi rimovibili resta distinto. DriveSweep non modifica il database TCC.
+
+Per un certificato già presente nel portachiavi: `make build SIGNING_MODE=identity SIGNING_IDENTITY="Developer ID Application: …"`. La CI usa esplicitamente `SIGNING_MODE=adhoc`: gli artefatti CI e le vecchie release possono richiedere nuovamente i permessi dopo un aggiornamento. `make build SIGNING_MODE=adhoc` rimane disponibile per build temporanee e stampa questo limite. La firma non ripiega silenziosamente su ad hoc se il certificato locale manca o fallisce.
+
+Un download senza notarizzazione Apple può ricevere un avviso Gatekeeper: verifica provenienza e integrità e consulta [Sicurezza](SECURITY.md) e la [guida Apple](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-identified-developer-mh40616/mac). Non è necessario disattivare globalmente le protezioni.
 
 Collega un disco esterno scrivibile, analizza e controlla le categorie prima di pulire. Target interni, immagini e rete sono esclusi; errori di permesso sono espliciti. App e CLI rispettano TCC e non aggirano macOS.
 
