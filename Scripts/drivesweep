@@ -1,0 +1,3 @@
+#!/bin/sh
+# The bundled launcher and installed symlink use the same signed native binary.
+exec "${DRIVESWEEP_BIN:-/Applications/DriveSweep.app/Contents/MacOS/DriveSweep}" --cli "$@"

@@ -1,5 +1,7 @@
 # BlueHarvest compatibility research
 
+> Stato aggiornato al 5 ottobre 2026: DriveSweep 3.1 aggiunge [CLI completa](CLI.md) e monitor CPU/RAM/I/O dei processi del motore. La ricerca sotto descrive il vendor e i criteri originali; il codice corrente usa classificazione plist di `diskutil`, VolumeUUID, consensi e preview di sola lettura. [Implementazione e prove correnti](V3.md).
+
 **Date:** 2026-09-02  
 **Scope:** BlueHarvest’s documented behavior compared with DriveSweep’s macOS target. This is a source-based product-scope note; it does not change product code.
 
@@ -145,7 +147,7 @@ The following wording keeps BlueHarvest-compatible behavior understandable witho
 
 ## Scope gaps to track explicitly
 
-The current project README describes a narrower physical-volume product, while the current Objective-C implementation uses `NSFileManager` mounted-volume enumeration, a text match against `diskutil info`, fixed cleanup toggles, comma-separated volume-name exclusions, mount notifications, and a periodic reconciliation timer. Those are useful starting points, but the compatibility requirements above imply several future hardening items: stable volume identity, machine-readable device classification, explicit dry-run/error reporting, and AppleDouble warnings/whitelisting. See the local [README](../README.md) and [implementation](../Sources/main.m) for the baseline.
+The current implementation uses mounted-volume enumeration plus machine-readable `diskutil` classification, verified VolumeUUID, per-disk consent, read-only preview/error reporting and AppleDouble warnings/whitelisting. App and CLI share these boundaries. Remaining product gaps relative to BlueHarvest include network targets, continuous file-change monitoring, Finder integration and archive cleanup; these are outside the physical-volume scope. See the [README](../README.md), [CLI guide](CLI.md) and [current validation](V3.md). Earlier recommendations in this research are design criteria, not a current feature-completion report.
 
 This note intentionally does not claim undocumented BlueHarvest internals, nor does it treat old reviews or search-result summaries as authoritative. Vendor pages and cached copies can lag one another, so version-specific claims above are anchored to the vendor’s dated [release notes](https://www.zeroonetwenty.com/blueharvest/release-notes.html) and should be rechecked before release.
 

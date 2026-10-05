@@ -8,6 +8,8 @@
 #import <sys/resource.h>
 #import <sys/stat.h>
 #import <unistd.h>
+#import <signal.h>
+#import "Resources.inc"
 
 static NSString *const DSAutomaticCleaning = @"automaticCleaning";
 static NSString *const DSPeriodicCleaning = @"periodicCleaning";
@@ -126,11 +128,62 @@ static NSDictionary<NSString *, id> *DSDefaultPreferences(void) {
     };
 }
 
+static void DSBroadcastPreferences(void) {
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"com.github.naicud.drivesweep.preferences"
+        object:[NSString stringWithFormat:@"%d", getpid()] userInfo:nil deliverImmediately:YES];
+}
+
 @interface DSFlippedView : NSView
 @end
 
 @implementation DSFlippedView
 - (BOOL)isFlipped { return YES; }
+@end
+
+// Native controls, dynamic system colors and no rendering dependencies.
+static NSTextField *DSLabel(NSString *text, CGFloat size, NSFontWeight weight, NSColor *color) {
+    NSTextField *label = [NSTextField labelWithString:text ?: @""];
+    label.font = [NSFont systemFontOfSize:size weight:weight];
+    label.textColor = color;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    return label;
+}
+
+static NSStackView *DSStack(NSArray<NSView *> *views, NSUserInterfaceLayoutOrientation orientation, CGFloat spacing) {
+    NSStackView *stack = [NSStackView stackViewWithViews:views];
+    stack.orientation = orientation;
+    stack.alignment = orientation == NSUserInterfaceLayoutOrientationVertical ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
+    stack.spacing = spacing;
+    return stack;
+}
+
+@interface DSSurfaceView : NSView
+@end
+@implementation DSSurfaceView
+- (void)refreshSurfaceAppearance {
+    [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        self.layer.backgroundColor = [NSColor.windowBackgroundColor blendedColorWithFraction:0.065 ofColor:NSColor.labelColor].CGColor;
+        self.layer.borderColor = [NSColor.separatorColor colorWithAlphaComponent:0.3].CGColor;
+        self.layer.borderWidth = 1;
+    }];
+}
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self refreshSurfaceAppearance]; }
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self refreshSurfaceAppearance]; }
+@end
+
+@interface DSCapacityBar : NSView
+@property double usedFraction;
+@end
+@implementation DSCapacityBar
+- (void)drawRect:(NSRect)dirtyRect {
+    [NSColor.quaternaryLabelColor setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:4 yRadius:4] fill];
+    NSRect used = self.bounds;
+    used.size.width *= MAX(0, MIN(1, self.usedFraction));
+    [(self.usedFraction > 0.9 ? NSColor.systemOrangeColor : NSColor.controlAccentColor) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:used xRadius:4 yRadius:4] fill];
+}
 @end
 
 typedef NS_ENUM(NSUInteger, DSOperationKind) {
@@ -153,6 +206,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property BOOL automaticCleanup;
 @property BOOL periodicCleanup;
 @property NSTimeInterval lastUpdateTime;
+@property NSTimeInterval startedAt;
 @property (copy) void (^progressHandler)(DSOperationState *operation);
 @end
 
@@ -188,11 +242,40 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 @property (strong) NSTimer *scheduleCountdownTimer;
 @property (strong) NSDate *nextPeriodicCleanupDate;
 @property (strong) NSTimer *resourceMonitorTimer;
+@property (strong) DSResourceSampler *periodicResourceSampler;
 @property (strong) NSArray<NSURL *> *eligibleVolumes;
 @property (strong) NSDictionary<NSString *, NSString *> *eligibleVolumeIdentities;
 @property (strong) NSMutableSet<NSString *> *scheduledCleanupPaths;
 @property (strong) NSMutableSet<NSString *> *handledMountIdentities;
 @property dispatch_queue_t cleanupQueue;
+@property dispatch_queue_t discoveryQueue;
+@property BOOL discoveryRunning;
+@property BOOL discoveryRequested;
+@property NSUInteger mountGeneration;
+@property (strong) NSDictionary<NSString *, NSDictionary *> *volumeCapacity;
+@property (strong) NSMutableDictionary<NSString *, NSDictionary *> *previewRecords;
+@property (strong) NSMutableArray<NSString *> *recentActivity;
+@property (strong) NSTextField *volumeCountLabel;
+@property (strong) NSTextField *candidateCountLabel;
+@property (strong) NSTextField *protectedCountLabel;
+@property (strong) NSTextField *removedCountLabel;
+@property NSUInteger sessionRemovedCount;
+@property (strong) NSButton *exportReportButton;
+@property (strong) NSTask *previewTask;
+@property BOOL previewWorker;
+@property (strong) DSLease *automationLease;
+@property BOOL requiresAutomationLease;
+@property (strong) DSResourceSampler *liveSampler;
+@property dispatch_queue_t liveSampleQueue;
+@property BOOL liveSamplePending;
+@property (strong) NSTimer *liveSampleTimer;
+@property (strong) NSDictionary *liveSnapshot;
+@property (strong) DSSpeedometer *cpuGauge;
+@property (strong) DSSpeedometer *memoryGauge;
+@property (strong) NSTextField *liveProcessLabel;
+@property (strong) NSTextField *liveTotalsLabel;
+@property (strong) NSWindow *liveProcessWindow;
+@property (strong) NSTextView *liveProcessText;
 @property (strong) NSScrollView *dashboardScrollView;
 @property (strong) NSView *dashboardDocumentView;
 @property (strong) NSButton *analyzeAllButton;
@@ -354,6 +437,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [defaults setInteger:clampedMinutes forKey:DSPeriodicCleaningInterval];
     [defaults setObject:DSPeriodicCleaningIntervalUnitMinutes forKey:DSPeriodicCleaningIntervalUnit];
     [defaults setBool:YES forKey:DSPeriodicCleaning];
+    DSBroadcastPreferences();
     [self configurePeriodicCleanupTimer];
     [self setDashboardStatusMessage:[NSString stringWithFormat:@"Pianificazione avviata: ogni %@. %@.", [self periodicCleanupIntervalLabel], [self nextPeriodicCleanupLabelAtDate:[NSDate date]]]];
     [self rebuildMenu];
@@ -368,6 +452,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)suspendPeriodicCleanupForResourceGuardWithWarning:(NSString *)warning {
     self.periodicCleanupSuspendedByResourceGuard = YES;
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DSPeriodicCleaning];
+    DSBroadcastPreferences();
     [self.periodicCleanupTimer invalidate];
     self.periodicCleanupTimer = nil;
     [self.scheduleCountdownTimer invalidate];
@@ -382,6 +467,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     if (operation && !operation.periodicCleanup) return;
     [self.resourceMonitorTimer invalidate];
     self.resourceMonitorTimer = nil;
+    self.periodicResourceSampler = nil;
     self.resourceSampleWallTime = 0;
     self.resourceSampleCPUTime = 0;
     self.consecutiveResourceBreaches = 0;
@@ -394,25 +480,13 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [self stopResourceMonitorForOperation:operation];
         return;
     }
-    struct rusage usage;
-    struct mach_task_basic_info taskInfo;
-    mach_msg_type_number_t taskInfoCount = MACH_TASK_BASIC_INFO_COUNT;
-    if (getrusage(RUSAGE_SELF, &usage) != 0 || task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&taskInfo, &taskInfoCount) != KERN_SUCCESS) return;
-    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
-    NSTimeInterval cpuTime = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1000000.0 + usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1000000.0;
-    if (self.resourceSampleWallTime <= 0) {
-        self.resourceSampleWallTime = now;
-        self.resourceSampleCPUTime = cpuTime;
-        return;
-    }
-    NSTimeInterval elapsed = now - self.resourceSampleWallTime;
-    double cpuPercent = elapsed > 0 ? ((cpuTime - self.resourceSampleCPUTime) / elapsed) * 100.0 : 0;
-    self.resourceSampleWallTime = now;
-    self.resourceSampleCPUTime = cpuTime;
-    uint64_t residentBytes = taskInfo.resident_size;
+    NSDictionary *snapshot = [self.periodicResourceSampler sample];
+    if (!snapshot || [snapshot[@"unavailable"] unsignedIntegerValue]) return;
+    double cpuPercent = snapshot[@"cpuPercent"] == NSNull.null ? 0 : [snapshot[@"cpuPercent"] doubleValue];
+    uint64_t residentBytes = [snapshot[@"residentBytes"] unsignedLongLongValue];
     BOOL breach = cpuPercent > DSResourceGuardMaximumCPUPercent || residentBytes > DSResourceGuardMaximumResidentBytes;
     self.consecutiveResourceBreaches = breach ? self.consecutiveResourceBreaches + 1 : 0;
-    NSString *resourceStatus = [NSString stringWithFormat:@"Impatto pianificazione: CPU %.0f%% · RAM %.0f MB%@", cpuPercent, residentBytes / (1024.0 * 1024.0), breach ? @" · soglia superata" : @""];
+    NSString *resourceStatus = [NSString stringWithFormat:@"Impatto pianificazione e figli: CPU %.0f%% · RSS %.0f MiB%@", cpuPercent, residentBytes / (1024.0 * 1024.0), breach ? @" · soglia superata" : @""];
     self.resourceStatusLabel.stringValue = resourceStatus;
     self.resourceStatusLabel.accessibilityValue = resourceStatus;
     if (![self resourceGuardShouldPauseForCPUPercent:cpuPercent residentBytes:residentBytes consecutiveBreaches:self.consecutiveResourceBreaches]) return;
@@ -426,9 +500,102 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)startResourceMonitorForOperation:(DSOperationState *)operation {
     if (!operation.periodicCleanup) return;
     [self stopResourceMonitorForOperation:operation];
+    self.periodicResourceSampler = [[DSResourceSampler alloc] init];
+    self.periodicResourceSampler.includePeers = NO;
+    [self.periodicResourceSampler sample];
     self.resourceStatusLabel.stringValue = @"Impatto pianificazione: misuro CPU e RAM di DriveSweep…";
     self.resourceMonitorTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(samplePeriodicResourceUsage:) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.resourceMonitorTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)sharedPreferencesChanged:(NSNotification *)notification {
+    if ([notification.object isEqual:[NSString stringWithFormat:@"%d", getpid()]]) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSUserDefaults.standardUserDefaults synchronize];
+        if (![self periodicCleanupIsEnabled] && self.activeOperation.periodicCleanup) {
+            @synchronized (self.activeOperation) { self.activeOperation.cancellationRequested = YES; }
+        }
+        [self configurePeriodicCleanupTimer];
+        [self refreshPreferenceControls];
+        [self checkMountedVolumes];
+        [self rebuildMenu];
+    });
+}
+
+- (NSString *)liveProcessDescription:(NSDictionary *)snapshot {
+    NSMutableString *text = [NSMutableString stringWithString:@"PID      Processo         CPU/core  Fisica MiB   RSS MiB   Read B/s  Write B/s Thread\n"];
+    for (NSDictionary *process in snapshot[@"processes"]) {
+        if (![process[@"available"] boolValue]) {
+            [text appendFormat:@"%-8d %@ · misure non disponibili\n", [process[@"pid"] intValue], process[@"name"]];
+            continue;
+        }
+        NSString *cpu = process[@"cpuPercent"] == NSNull.null ? @"—" : [NSString stringWithFormat:@"%.1f%%", [process[@"cpuPercent"] doubleValue]];
+        NSString *reads = process[@"readBytesPerSecond"] == NSNull.null ? @"—" : [process[@"readBytesPerSecond"] description];
+        NSString *writes = process[@"writeBytesPerSecond"] == NSNull.null ? @"—" : [process[@"writeBytesPerSecond"] description];
+        [text appendFormat:@"%-8d %-16s %8s %10.1f %9.1f %10s %10s %6s\n", [process[@"pid"] intValue], [process[@"name"] UTF8String], cpu.UTF8String,
+            [process[@"physicalBytes"] doubleValue] / (1024 * 1024), [process[@"residentBytes"] doubleValue] / (1024 * 1024), reads.UTF8String, writes.UTF8String, [process[@"threads"] description].UTF8String];
+    }
+    [text appendString:@"\nCPU: 100% = un core. RAM fisica = physical footprint. RSS può differire.\nCampionamento 1 s; i processi molto brevi possono non comparire.\nIl totale somma le misure dei processi e può includere memoria condivisa.\n"];
+    return text;
+}
+
+- (void)showLiveProcesses:(id)sender {
+    if (!self.liveProcessWindow) {
+        self.liveProcessWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 420) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+        self.liveProcessWindow.title = @"DriveSweep · processi live";
+        self.liveProcessWindow.releasedWhenClosed = NO;
+        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:self.liveProcessWindow.contentView.bounds];
+        scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        scroll.hasVerticalScroller = YES;
+        self.liveProcessText = [[NSTextView alloc] initWithFrame:scroll.bounds];
+        self.liveProcessText.editable = NO;
+        self.liveProcessText.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+        self.liveProcessText.textContainerInset = NSMakeSize(16, 16);
+        self.liveProcessText.autoresizingMask = NSViewWidthSizable;
+        scroll.documentView = self.liveProcessText;
+        [self.liveProcessWindow.contentView addSubview:scroll];
+        [self.liveProcessWindow center];
+    }
+    self.liveProcessText.string = [self liveProcessDescription:self.liveSnapshot ?: @{}];
+    [self.liveProcessWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)sampleLiveResources:(NSTimer *)timer {
+    if (self.liveSamplePending || !self.liveSampler) return;
+    self.liveSamplePending = YES;
+    dispatch_async(self.liveSampleQueue, ^{
+      @autoreleasepool {
+        NSDictionary *snapshot = [self.liveSampler sample];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.liveSamplePending = NO;
+            self.liveSnapshot = snapshot;
+            id cpu = snapshot[@"cpuPercent"];
+            uint64_t memory = [snapshot[@"physicalBytes"] unsignedLongLongValue];
+            self.cpuGauge.fraction = cpu == NSNull.null ? 0 : [cpu doubleValue] / (100.0 * MAX(1, [snapshot[@"logicalCPUs"] integerValue]));
+            self.cpuGauge.value = cpu == NSNull.null ? @"—" : [NSString stringWithFormat:@"%.1f%%", [cpu doubleValue]];
+            self.cpuGauge.caption = @"CPU · 100% = un core";
+            self.cpuGauge.accessibilityLabel = @"CPU aggregata dei processi DriveSweep";
+            self.cpuGauge.accessibilityValue = self.cpuGauge.value;
+            self.memoryGauge.fraction = (double)memory / DSResourceGuardMaximumResidentBytes;
+            self.memoryGauge.value = [NSString stringWithFormat:@"%.1f MiB", memory / (1024.0 * 1024)];
+            self.memoryGauge.caption = @"RAM · scala 750 MiB";
+            self.memoryGauge.accessibilityLabel = @"RAM fisica aggregata dei processi DriveSweep";
+            self.memoryGauge.accessibilityValue = self.memoryGauge.value;
+            self.cpuGauge.needsDisplay = YES; self.memoryGauge.needsDisplay = YES;
+            NSString *read = snapshot[@"readBytesPerSecond"] == NSNull.null ? @"—" : [NSByteCountFormatter stringFromByteCount:[snapshot[@"readBytesPerSecond"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
+            NSString *write = snapshot[@"writeBytesPerSecond"] == NSNull.null ? @"—" : [NSByteCountFormatter stringFromByteCount:[snapshot[@"writeBytesPerSecond"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
+            self.liveTotalsLabel.stringValue = [NSString stringWithFormat:@"%lu processi · picco %.1f MiB\nI/O lettura %@/s · scrittura %@/s%@", (unsigned long)[snapshot[@"processes"] count], [snapshot[@"peakPhysicalBytes"] doubleValue] / (1024 * 1024), read, write,
+                [snapshot[@"unavailable"] unsignedIntegerValue] || [snapshot[@"warmingProcesses"] unsignedIntegerValue] || [snapshot[@"truncated"] boolValue] ? @" · dati parziali" : @""];
+            NSMutableArray *rows = [NSMutableArray array];
+            for (NSDictionary *process in snapshot[@"processes"]) {
+                [rows addObject:[NSString stringWithFormat:@"PID %@ · %@ · %@", process[@"pid"], process[@"name"], [process[@"available"] boolValue] ? [NSString stringWithFormat:@"%.1f MiB", [process[@"physicalBytes"] doubleValue] / (1024 * 1024)] : @"non disponibile"]];
+                if (rows.count == 3) break;
+            }
+            self.liveProcessLabel.stringValue = [rows componentsJoinedByString:@"\n"];
+            if (self.liveProcessWindow.isVisible) self.liveProcessText.string = [self liveProcessDescription:snapshot];
+        });
+      }
+    });
 }
 
 - (void)startPeriodicCleanup:(id)sender {
@@ -439,6 +606,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     (void)sender;
     self.periodicCleanupSuspendedByResourceGuard = NO;
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DSPeriodicCleaning];
+    DSBroadcastPreferences();
     [self.periodicCleanupTimer invalidate];
     self.periodicCleanupTimer = nil;
     [self.scheduleCountdownTimer invalidate];
@@ -517,6 +685,10 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)runPeriodicCleanup:(NSTimer *)timer {
     (void)timer;
+    if (self.requiresAutomationLease && !self.automationLease) {
+        [self setDashboardStatusMessage:@"Automazione gestita da un'altra istanza DriveSweep. Le azioni manuali restano disponibili."];
+        return;
+    }
     if ([self periodicCleanupIsEnabled]) {
         self.nextPeriodicCleanupDate = [NSDate dateWithTimeIntervalSinceNow:[self periodicCleanupInterval]];
         [self updateScheduleCountdown:nil];
@@ -581,6 +753,17 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     self.preferenceTextFields = [NSMutableDictionary dictionary];
     self.lastCustomAnalysisFingerprints = [NSMutableDictionary dictionary];
     self.cleanupQueue = dispatch_queue_create("com.github.naicud.drivesweep.cleanup", DISPATCH_QUEUE_SERIAL);
+    self.discoveryQueue = dispatch_queue_create("com.github.naicud.drivesweep.discovery", DISPATCH_QUEUE_SERIAL);
+    self.previewRecords = [NSMutableDictionary dictionary];
+    self.recentActivity = [NSMutableArray array];
+    self.volumeCapacity = @{};
+    self.requiresAutomationLease = YES;
+    self.automationLease = [DSLease acquire:@"automation"];
+    self.liveSampler = [[DSResourceSampler alloc] init];
+    self.liveSampleQueue = dispatch_queue_create("com.github.naicud.drivesweep.resources", DISPATCH_QUEUE_SERIAL);
+    self.liveSampleTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(sampleLiveResources:) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.liveSampleTimer forMode:NSRunLoopCommonModes];
+    [[NSDistributedNotificationCenter defaultCenter] addObserver:self selector:@selector(sharedPreferencesChanged:) name:@"com.github.naicud.drivesweep.preferences" object:nil];
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     NSImage *menuIcon = [NSImage imageWithSystemSymbolName:@"broom.fill" accessibilityDescription:@"DriveSweep"];
     menuIcon.template = YES;
@@ -604,6 +787,9 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [self.periodicCleanupTimer invalidate];
     [self.scheduleCountdownTimer invalidate];
     [self.resourceMonitorTimer invalidate];
+    [self.liveSampleTimer invalidate];
+    [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
+    if (self.previewTask.running) kill(self.previewTask.processIdentifier, SIGKILL);
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)hasVisibleWindows {
@@ -657,8 +843,18 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if (error) *error = launchError;
         return nil;
     }
-    [task waitUntilExit];
+    // Drain stdout before waiting: a full pipe must never deadlock discovery.
+    // The watchdog runs independently of both serial worker queues.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        if (task.running) {
+            [task terminate];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                if (task.running) kill(task.processIdentifier, SIGKILL);
+            });
+        }
+    });
     NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
+    [task waitUntilExit];
     if (task.terminationStatus != 0) {
         if (error) *error = [NSError errorWithDomain:@"DriveSweep" code:1 userInfo:@{NSLocalizedDescriptionKey: @"diskutil non ha potuto verificare il disco."}];
         return nil;
@@ -697,19 +893,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (NSString *)mountIdentityForVolume:(NSURL *)url {
-    NSTask *task = [[NSTask alloc] init];
-    task.executableURL = [NSURL fileURLWithPath:@"/usr/sbin/diskutil"];
-    task.arguments = @[@"info", @"-plist", url.path];
-    NSPipe *pipe = [NSPipe pipe];
-    task.standardOutput = pipe;
-    task.standardError = [NSFileHandle fileHandleWithNullDevice];
-    NSError *launchError = nil;
-    if (![task launchAndReturnError:&launchError]) return nil;
-    [task waitUntilExit];
-    if (task.terminationStatus != 0) return nil;
-    NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
-    NSDictionary *info = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:nil error:nil];
-    return [self mountIdentityFromDiskInfo:info];
+    return [self mountIdentityFromDiskInfo:[self diskInfoForVolume:url error:nil]];
 }
 
 - (NSString *)mountIdentityFromDiskInfo:(NSDictionary *)info {
@@ -774,6 +958,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     rule[DSVolumeRuleCustomExtensionsFingerprint] = fingerprint;
     rules[identity] = rule.copy;
     [defaults setObject:rules.copy forKey:DSVolumeRules];
+    DSBroadcastPreferences();
     return YES;
 }
 
@@ -792,6 +977,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [rules removeObjectForKey:identity];
     }
     [defaults setObject:rules.copy forKey:DSVolumeRules];
+    DSBroadcastPreferences();
 }
 
 - (void)setPeriodicCleaning:(BOOL)allowed forIdentity:(NSString *)identity name:(NSString *)name {
@@ -810,6 +996,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [rules removeObjectForKey:identity];
     }
     [defaults setObject:rules.copy forKey:DSVolumeRules];
+    DSBroadcastPreferences();
 }
 
 - (NSString *)volumeRuleSummaryForIdentity:(NSString *)identity {
@@ -872,7 +1059,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     self.cancelOperationButton.hidden = NO;
     self.cancelOperationButton.enabled = ![self operationShouldStop:operation];
     self.cancelOperationButton.accessibilityLabel = @"Annulla l'operazione in corso";
-    [self rebuildMenu];
+    self.operationStatusLabel.toolTip = status;
 }
 
 - (void)publishOperation:(DSOperationState *)operation category:(NSString *)category location:(NSURL *)location categoryFinished:(BOOL)categoryFinished force:(BOOL)force {
@@ -880,15 +1067,24 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     BOOL shouldPublish = force;
     @synchronized (operation) {
         if (category.length) operation.category = category;
-        if (location) operation.safeLocation = [self safeLocationForURL:location volume:operation.volumeURL];
         NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
         if (categoryFinished) operation.completedCategories++;
         if (force || now - operation.lastUpdateTime >= 0.25 || categoryFinished) {
             operation.lastUpdateTime = now;
+            if (location) operation.safeLocation = [self safeLocationForURL:location volume:operation.volumeURL];
             shouldPublish = YES;
         }
     }
     if (!shouldPublish) return;
+    if (self.previewWorker) {
+        NSDictionary *progress = @{ @"progress": @YES, @"category": operation.category ?: @"",
+            @"location": operation.safeLocation ?: @"", @"completed": @(operation.completedCategories) };
+        NSData *data = [NSJSONSerialization dataWithJSONObject:progress options:0 error:nil];
+        fwrite(data.bytes, 1, data.length, stdout);
+        fputc('\n', stdout);
+        fflush(stdout);
+        return;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{ [self updateOperationUI:operation]; });
 }
 
@@ -907,12 +1103,14 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     DSOperationState *operation = [[DSOperationState alloc] init];
     operation.identifier = NSUUID.UUID.UUIDString;
     operation.kind = kind;
+    operation.startedAt = NSDate.timeIntervalSinceReferenceDate;
     operation.volumeIdentity = identity ?: @"";
     operation.volumeName = volume.lastPathComponent ?: @"Disco esterno";
     operation.volumeURL = volume;
     operation.totalCategories = [self enabledCategoryCountForOptions:options];
     operation.safeLocation = @"Verifico il disco";
     self.activeOperation = operation;
+    [self rebuildMenu];
     [self publishOperation:operation category:nil location:nil categoryFinished:NO force:YES];
     return operation;
 }
@@ -921,9 +1119,11 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (operation != self.activeOperation) return;
         [self stopResourceMonitorForOperation:operation];
-        BOOL cancelled = [result[@"cancelled"] boolValue];
+        BOOL cancelled = [result[@"cancelled"] boolValue] || [self operationShouldStop:operation];
         NSString *message = cancelled
-            ? [NSString stringWithFormat:@"Operazione annullata su %@: %lu elementi già rimossi.", operation.volumeName, (unsigned long)[result[@"removed"] unsignedIntegerValue]]
+            ? operation.kind == DSOperationKindPreview
+                ? [NSString stringWithFormat:@"Analisi annullata su %@. Nessun file modificato.", operation.volumeName]
+                : [NSString stringWithFormat:@"Operazione annullata su %@: %lu elementi già rimossi.", operation.volumeName, (unsigned long)[result[@"removed"] unsignedIntegerValue]]
             : nil;
         if (message.length && !self.periodicCleanupSuspendedByResourceGuard) [self setDashboardStatusMessage:message];
         self.activeOperation = nil;
@@ -951,18 +1151,21 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 - (void)volumeMounted:(NSNotification *)notification {
     NSURL *url = notification.userInfo[NSWorkspaceVolumeURLKey];
     if (!url) return;
+    self.mountGeneration++;
     [self checkMountedVolumes];
 }
 
 - (void)handleUnmountedVolumeURL:(NSURL *)url {
     NSString *path = url.path;
     if (!path.length) return;
+    self.mountGeneration++;
 
     NSString *identity = self.eligibleVolumeIdentities[path];
     DSOperationState *operation = self.activeOperation;
     BOOL samePath = operation.volumeURL.path.length && [operation.volumeURL.path isEqualToString:path];
     BOOL sameIdentity = operation.volumeIdentity.length && identity.length && [operation.volumeIdentity isEqualToString:identity];
     if (identity.length) {
+        [self.previewRecords removeObjectForKey:identity];
         [self.lastCustomAnalysisFingerprints removeObjectForKey:identity];
         [self.handledMountIdentities removeObject:identity];
     }
@@ -983,18 +1186,38 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (void)checkMountedVolumes {
-    dispatch_async(self.cleanupQueue, ^{
+    if (self.requiresAutomationLease && !self.automationLease) self.automationLease = [DSLease acquire:@"automation"];
+    if (self.discoveryRunning) { self.discoveryRequested = YES; return; }
+    self.discoveryRunning = YES;
+    NSUInteger generation = self.mountGeneration;
+    dispatch_queue_t queue = self.discoveryQueue ?: self.cleanupQueue;
+    dispatch_async(queue, ^{
+      @autoreleasepool {
         NSArray<NSURL *> *volumes = [self externalVolumes];
         NSMutableDictionary<NSString *, NSString *> *identities = [NSMutableDictionary dictionary];
+        NSMutableDictionary<NSString *, NSDictionary *> *capacity = [NSMutableDictionary dictionary];
         for (NSURL *url in volumes) {
             NSString *identity = [self mountIdentityForVolume:url];
             if (identity) identities[url.path] = identity;
+            NSDictionary *values = [url resourceValuesForKeys:@[NSURLVolumeTotalCapacityKey, NSURLVolumeAvailableCapacityKey, NSURLVolumeLocalizedFormatDescriptionKey] error:nil];
+            if (values) capacity[url.path] = values;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.discoveryRunning = NO;
+            if (generation != self.mountGeneration) {
+                self.discoveryRequested = NO;
+                [self checkMountedVolumes];
+                return;
+            }
             self.eligibleVolumes = volumes;
             self.eligibleVolumeIdentities = identities;
+            self.volumeCapacity = capacity.copy;
+            NSSet *mountedIdentities = [NSSet setWithArray:identities.allValues];
+            for (NSString *identity in self.previewRecords.allKeys.copy) {
+                if (![mountedIdentities containsObject:identity]) [self.previewRecords removeObjectForKey:identity];
+            }
             [self rebuildMenu];
-            if ([[NSUserDefaults standardUserDefaults] boolForKey:DSAutomaticCleaning]) {
+            if ((!self.requiresAutomationLease || self.automationLease) && [[NSUserDefaults standardUserDefaults] boolForKey:DSAutomaticCleaning]) {
                 for (NSURL *url in volumes) {
                     NSString *identity = identities[url.path];
                     if (![self allowsAutomaticCleaningForIdentity:identity] || [self.handledMountIdentities containsObject:identity]) continue;
@@ -1006,7 +1229,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
                     });
                 }
             }
+            if (self.discoveryRequested) {
+                self.discoveryRequested = NO;
+                [self checkMountedVolumes];
+            }
         });
+      }
     });
 }
 
@@ -1031,6 +1259,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSUInteger removed = 0;
     NSURL *item = nil;
     while ((item = [enumerator nextObject])) {
+      @autoreleasepool {
         if ([self operationShouldStop:operation]) break;
         [self publishOperation:operation category:nil location:item categoryFinished:NO force:NO];
         struct stat itemStatus;
@@ -1056,6 +1285,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if ([manager removeItemAtURL:item error:&removeError]) { removed++; [self recordRemovalForOperation:operation]; }
         else if (removeError.code != NSFileNoSuchFileError) [errors addObject:[NSString stringWithFormat:@"%@ (%@)", item.lastPathComponent, removeError.localizedDescription]];
         if (itemIsDirectory) [enumerator skipDescendants];
+      }
     }
     if ([self operationShouldStop:operation]) return removed;
     NSURL *rootItem = [volume URLByAppendingPathComponent:name];
@@ -1182,6 +1412,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         }
     }
     [defaults setObject:profile forKey:DSCleanupProfile];
+    DSBroadcastPreferences();
     [self refreshPreferenceControls];
     [self rebuildMenu];
 }
@@ -1198,6 +1429,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [defaults setObject:safe[DSAppleDoubleExtensions] forKey:DSAppleDoubleExtensions];
     [defaults setObject:safe[DSCustomFileExtensions] forKey:DSCustomFileExtensions];
     [defaults setObject:safe[DSCleanupProfile] forKey:DSCleanupProfile];
+    DSBroadcastPreferences();
     [self selectProfile:DSProfileCrossPlatform inPopup:self.profilePopup];
     [self configurePeriodicCleanupTimer];
     [self refreshPreferenceControls];
@@ -1222,6 +1454,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSUInteger removed = 0;
     FTSENT *entry = nil;
     while ((entry = fts_read(tree))) {
+      @autoreleasepool {
         if ([self operationShouldStop:operation]) break;
         NSURL *entryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_accpath isDirectory:NO relativeToURL:nil];
         [self publishOperation:operation category:nil location:entryURL categoryFinished:NO force:NO];
@@ -1246,6 +1479,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if ([protectedExtensions containsObject:extension]) continue;
         if (unlink(entry->fts_accpath) == 0) { removed++; [self recordRemovalForOperation:operation]; }
         else if (errno != ENOENT) [errors addObject:[NSString stringWithFormat:@"%@ (%s)", name, strerror(errno)]];
+      }
     }
     fts_close(tree);
     return removed;
@@ -1272,6 +1506,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSUInteger removed = 0;
     FTSENT *entry = nil;
     while ((entry = fts_read(tree))) {
+      @autoreleasepool {
         if ([self operationShouldStop:operation]) break;
         NSURL *entryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_path isDirectory:entry->fts_info == FTS_D relativeToURL:nil];
         [self publishOperation:operation category:nil location:entryURL categoryFinished:NO force:NO];
@@ -1297,6 +1532,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if (!DSIsCustomExtensionCandidate(name, extensions)) continue;
         if (unlink(entry->fts_accpath) == 0) { removed++; [self recordRemovalForOperation:operation]; }
         else if (errno != ENOENT) [errors addObject:[NSString stringWithFormat:@"%@ (%s)", name, strerror(errno)]];
+      }
     }
     fts_close(tree);
     return removed;
@@ -1414,10 +1650,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
     for (NSString *key in DSCleanupPreferenceKeys()) counts[key] = @0;
     NSUInteger protectedCount = 0;
+    uint64_t candidateBytes = 0;
     NSSet<NSString *> *protectedExtensions = options[DSAppleDoubleExtensions];
     NSDictionary<NSString *, NSString *> *fileNames = @{ DSDSStore: @".DS_Store", DSApdisk: @".apdisk", DSVolumeIcon: @".VolumeIcon.icns", DSDesktopIni: @"Desktop.ini", DSThumbsDb: @"Thumbs.db" };
     FTSENT *entry = nil;
     while ((entry = fts_read(tree))) {
+      @autoreleasepool {
         if ([self operationShouldStop:operation]) break;
         NSURL *entryURL = [NSURL fileURLWithFileSystemRepresentation:entry->fts_path isDirectory:entry->fts_info == FTS_D relativeToURL:nil];
         [self publishOperation:operation category:nil location:entryURL categoryFinished:NO force:NO];
@@ -1440,23 +1678,28 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if (entry->fts_info != FTS_F) continue;
         if (!entry->fts_statp || !S_ISREG(entry->fts_statp->st_mode) || entry->fts_statp->st_dev != rootStatus.st_dev) continue;
         NSString *name = [NSString stringWithUTF8String:entry->fts_name];
+        BOOL candidate = NO;
         if ([self cleanupOption:DSAppleDouble isEnabledInOptions:options] && [name hasPrefix:@"._"]) {
             NSString *extension = [[name substringFromIndex:2].pathExtension lowercaseString];
             if ([protectedExtensions containsObject:extension]) protectedCount++;
-            else counts[DSAppleDouble] = @([counts[DSAppleDouble] unsignedIntegerValue] + 1);
+            else { counts[DSAppleDouble] = @([counts[DSAppleDouble] unsignedIntegerValue] + 1); candidate = YES; }
         }
         if ([self cleanupOption:DSCustomFiles isEnabledInOptions:options] &&
             DSIsCustomExtensionCandidate(name, options[DSCustomFileExtensions])) {
             counts[DSCustomFiles] = @([counts[DSCustomFiles] unsignedIntegerValue] + 1);
+            candidate = YES;
         }
         for (NSString *key in fileNames) {
             if ([self cleanupOption:key isEnabledInOptions:options] && [name isEqualToString:fileNames[key]]) {
                 counts[key] = @([counts[key] unsignedIntegerValue] + 1);
+                candidate = YES;
             }
         }
+        if (candidate && entry->fts_statp->st_size > 0) candidateBytes += (uint64_t)entry->fts_statp->st_size;
+      }
     }
     fts_close(tree);
-    return @{ @"cancelled": @([self operationShouldStop:operation]), @"counts": counts.copy, @"protected": @(protectedCount) };
+    return @{ @"cancelled": @([self operationShouldStop:operation]), @"counts": counts.copy, @"protected": @(protectedCount), @"candidateFileBytes": @(candidateBytes) };
 }
 
 - (NSDictionary<NSString *, id> *)previewVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options {
@@ -1483,7 +1726,13 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
     NSUInteger protectedAppleDouble = 0;
     for (NSString *key in DSCleanupPreferenceKeys()) counts[key] = @0;
-    NSDictionary<NSString *, id> *filePreview = [self previewFileCountsOnePassFromVolume:volume options:options errors:errors operation:operation];
+    BOOL needsFileTraversal = NO;
+    for (NSString *key in @[DSAppleDouble, DSCustomFiles, DSDSStore, DSApdisk, DSVolumeIcon, DSDesktopIni, DSThumbsDb, DSAppleDoubleDirectories]) {
+        if ([self cleanupOption:key isEnabledInOptions:options]) { needsFileTraversal = YES; break; }
+    }
+    NSDictionary<NSString *, id> *filePreview = needsFileTraversal
+        ? [self previewFileCountsOnePassFromVolume:volume options:options errors:errors operation:operation]
+        : @{ @"counts": @{}, @"protected": @0, @"candidateFileBytes": @0 };
     NSDictionary<NSString *, NSNumber *> *fileCounts = filePreview[@"counts"];
     for (NSString *key in DSCleanupPreferenceKeys()) if (fileCounts[key]) counts[key] = fileCounts[key];
     protectedAppleDouble = [filePreview[@"protected"] unsignedIntegerValue];
@@ -1499,7 +1748,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         if ([self operationShouldStop:operation]) return [self cancelledPreviewResult:counts errors:errors];
         [self publishOperation:operation category:key location:nil categoryFinished:YES force:YES];
     }
-    return @{ @"success": @(errors.count == 0), @"cancelled": @NO, @"counts": counts.copy, @"protectedAppleDouble": @(protectedAppleDouble), @"errors": errors.copy };
+    return @{ @"success": @(errors.count == 0), @"cancelled": @NO, @"counts": counts.copy, @"protectedAppleDouble": @(protectedAppleDouble), @"candidateFileBytes": filePreview[@"candidateFileBytes"] ?: @0, @"errors": errors.copy };
 }
 
 - (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume {
@@ -1540,6 +1789,8 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (NSDictionary<NSString *, id> *)cleanVolumeOnWorker:(NSURL *)volume expectedMountIdentity:(NSString *)expectedMountIdentity options:(NSDictionary<NSString *, id> *)options operation:(DSOperationState *)operation {
+    __attribute__((objc_precise_lifetime)) DSLease *lease = [DSLease acquire:@"cleanup"];
+    if (!lease) return @{ @"success": @NO, @"busy": @YES, @"removed": @0, @"errors": @[@"Un'altra istanza app/CLI sta già pulendo. Riprova quando termina."] };
     NSError *eligibilityError = nil;
     if (![self isEligibleExternalVolume:volume error:&eligibilityError]) {
         NSString *message = eligibilityError.localizedDescription ?: @"Il disco non è più un volume esterno fisico scrivibile.";
@@ -1657,10 +1908,12 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         NSDictionary<NSString *, id> *result = [self cleanVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity options:options operation:operation];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.scheduledCleanupPaths removeObject:volume.path];
-            BOOL success = [result[@"success"] boolValue];
+            BOOL success = [result[@"success"] boolValue] && ![self operationShouldStop:operation];
             NSUInteger removed = [result[@"removed"] unsignedIntegerValue];
             NSArray<NSString *> *errors = result[@"errors"];
-            BOOL cancelled = [result[@"cancelled"] boolValue];
+            BOOL cancelled = [result[@"cancelled"] boolValue] || [self operationShouldStop:operation];
+            self.sessionRemovedCount += removed;
+            [self.previewRecords removeObjectForKey:expectedMountIdentity];
             NSString *details = [NSString stringWithFormat:@"%lu elementi rimossi", (unsigned long)removed];
             NSString *message = (cancelled && self.periodicCleanupSuspendedByResourceGuard)
                 ? [NSString stringWithFormat:@"Pulizia di %@ interrotta (%@). Pianificazione sospesa per protezione risorse: riattivala quando il carico è rientrato.", volume.lastPathComponent, details]
@@ -1670,6 +1923,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
                 ? [NSString stringWithFormat:@"%@ pulito (%@; %@).", volume.lastPathComponent, source, details]
                 : [NSString stringWithFormat:@"Pulizia di %@ non completata: %@", volume.lastPathComponent, [errors componentsJoinedByString:@"; "]];
             [self setDashboardStatusMessage:message];
+            [self addRecentActivity:message];
             self.statusItem.button.toolTip = message;
             if (!success || ![source isEqualToString:@"controllo automatico"]) [self notify:message];
             [self rebuildMenu];
@@ -1752,13 +2006,154 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     DSOperationState *operation = [self beginOperationKind:DSOperationKindPreview volume:volume identity:expectedMountIdentity options:options];
     if (!operation) return;
     dispatch_async(self.cleanupQueue, ^{
-        NSDictionary<NSString *, id> *report = [self previewVolumeOnWorker:volume expectedMountIdentity:expectedMountIdentity options:options operation:operation];
+        NSDictionary<NSString *, id> *report = [self previewInSubprocess:volume identity:expectedMountIdentity options:options operation:operation];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self finishOperation:operation result:report];
-            if ([report[@"success"] boolValue]) [self recordCustomExtensionAnalysisForIdentity:expectedMountIdentity options:options];
-            [self showPreviewReport:report options:options volume:volume];
+            if ([report[@"success"] boolValue] && ![self operationShouldStop:operation] && [self.eligibleVolumeIdentities[volume.path] isEqualToString:expectedMountIdentity]) [self recordCustomExtensionAnalysisForIdentity:expectedMountIdentity options:options];
+            if (![self operationShouldStop:operation] || [report[@"cancelled"] boolValue]) [self recordPreview:report volume:volume identity:expectedMountIdentity options:options elapsed: NSDate.timeIntervalSinceReferenceDate - operation.startedAt];
+            [self showDashboard:nil];
         });
     });
+}
+
+- (NSDictionary *)previewInSubprocess:(NSURL *)volume identity:(NSString *)identity options:(NSDictionary *)options operation:(DSOperationState *)operation {
+    // Read-only scanning is isolated from the UI and destructive cleanup queue.
+    // A filesystem call can block in the kernel; cancelling abandons that child,
+    // never a deletion in progress. Keep at most one unreaped child.
+    if (self.previewTask.running) return @{ @"success": @NO, @"counts": @{}, @"errors": @[@"Le risorse della precedente analisi sono ancora in attesa del filesystem. Riprova quando il disco risponde."] };
+    NSMutableDictionary *wireOptions = [options mutableCopy];
+    for (NSString *key in @[DSAppleDoubleExtensions, DSCustomFileExtensions]) {
+        NSSet *set = options[key];
+        wireOptions[key] = set.allObjects ?: @[];
+    }
+    NSData *input = [NSJSONSerialization dataWithJSONObject:wireOptions options:0 error:nil];
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = NSBundle.mainBundle.executableURL;
+    task.arguments = @[@"--preview-worker", volume.path, identity ?: @""];
+    NSPipe *stdinPipe = [NSPipe pipe];
+    NSPipe *stdoutPipe = [NSPipe pipe];
+    task.standardInput = stdinPipe;
+    task.standardOutput = stdoutPipe;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    NSObject *lock = [[NSObject alloc] init];
+    NSMutableData *buffer = [NSMutableData data];
+    __block NSDictionary *report = nil;
+    __block BOOL eof = NO;
+    __block BOOL overflow = NO;
+    stdoutPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+        NSData *chunk = handle.availableData;
+        @synchronized (lock) {
+            if (!chunk.length) { eof = YES; handle.readabilityHandler = nil; return; }
+            if (buffer.length + chunk.length > 1024 * 1024) { overflow = YES; return; }
+            [buffer appendData:chunk];
+            while (buffer.length) {
+                const char *bytes = buffer.bytes;
+                const char *newline = memchr(bytes, '\n', buffer.length);
+                if (!newline) break;
+                NSUInteger length = (NSUInteger)(newline - bytes);
+                NSData *line = [buffer subdataWithRange:NSMakeRange(0, length)];
+                [buffer replaceBytesInRange:NSMakeRange(0, length + 1) withBytes:NULL length:0];
+                NSDictionary *message = [NSJSONSerialization JSONObjectWithData:line options:0 error:nil];
+                if (![message isKindOfClass:NSDictionary.class]) continue;
+                if ([message[@"progress"] boolValue]) {
+                    @synchronized (operation) {
+                        operation.category = message[@"category"];
+                        operation.safeLocation = message[@"location"];
+                        operation.completedCategories = [message[@"completed"] unsignedIntegerValue];
+                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{ [self updateOperationUI:operation]; });
+                } else report = message;
+            }
+        }
+    };
+    NSError *error = nil;
+    if (!input || ![task launchAndReturnError:&error]) {
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil;
+        return @{ @"success": @NO, @"counts": @{}, @"errors": @[error.localizedDescription ?: @"Avvio analisi non riuscito."] };
+    }
+    self.previewTask = task;
+    [stdinPipe.fileHandleForWriting writeData:input];
+    [stdinPipe.fileHandleForWriting closeFile];
+    while (YES) {
+        BOOL finished = NO, tooLarge = NO;
+        @synchronized (lock) { finished = eof && !task.running; tooLarge = overflow; }
+        if ([self operationShouldStop:operation] || tooLarge) {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil;
+            if (task.running) [task terminate];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                if (task.running) kill(task.processIdentifier, SIGKILL);
+            });
+            return [self operationShouldStop:operation]
+                ? @{ @"success": @NO, @"cancelled": @YES, @"counts": @{}, @"protectedAppleDouble": @0, @"errors": @[] }
+                : @{ @"success": @NO, @"counts": @{}, @"errors": @[@"Analisi interrotta: troppe informazioni diagnostiche."] };
+        }
+        if (finished) break;
+        [NSThread sleepForTimeInterval:0.05];
+    }
+    stdoutPipe.fileHandleForReading.readabilityHandler = nil;
+    @synchronized (lock) {
+        return report ?: @{ @"success": @NO, @"counts": @{}, @"errors": @[@"Il processo di analisi è terminato senza un report valido."] };
+    }
+}
+
+- (void)addRecentActivity:(NSString *)message {
+    if (!self.recentActivity) self.recentActivity = [NSMutableArray array];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"HH:mm";
+    [self.recentActivity insertObject:[NSString stringWithFormat:@"%@  %@", [formatter stringFromDate:NSDate.date], message] atIndex:0];
+    while (self.recentActivity.count > 8) [self.recentActivity removeLastObject];
+}
+
+- (void)recordPreview:(NSDictionary *)report volume:(NSURL *)volume identity:(NSString *)identity options:(NSDictionary *)options elapsed:(NSTimeInterval)elapsed {
+    // A report belongs to one mounted UUID and one exact options snapshot.
+    if (!identity.length || ![self.eligibleVolumeIdentities[volume.path] isEqualToString:identity]) return;
+    if (!self.previewRecords) self.previewRecords = [NSMutableDictionary dictionary];
+    self.previewRecords[identity] = @{ @"report": report, @"options": options, @"date": NSDate.date, @"elapsed": @(elapsed), @"name": volume.lastPathComponent ?: @"Disco" };
+    NSString *message = [NSString stringWithFormat:@"%@ · analisi %@ in %.2f s", volume.lastPathComponent,
+        [report[@"cancelled"] boolValue] ? @"annullata" : [report[@"success"] boolValue] ? @"completata" : @"parziale", elapsed];
+    [self setDashboardStatusMessage:message];
+    [self addRecentActivity:message];
+    [self refreshDashboard];
+}
+
+- (NSDictionary *)currentPreviewForIdentity:(NSString *)identity {
+    NSDictionary *record = identity.length ? self.previewRecords[identity] : nil;
+    return [record[@"options"] isEqual:[self cleanupOptionsSnapshot]] ? record : nil;
+}
+
+- (void)showReportFromDashboard:(NSButton *)sender {
+    DSVolumeTarget *target = [self volumeTargetForDashboardButton:sender];
+    NSDictionary *record = [self currentPreviewForIdentity:target.mountIdentity];
+    if (record) [self showPreviewReport:record[@"report"] options:record[@"options"] volume:target.volumeURL];
+}
+
+- (NSData *)dashboardReportData {
+    NSMutableArray *volumes = [NSMutableArray array];
+    for (NSURL *volume in self.eligibleVolumes) {
+        NSDictionary *record = [self currentPreviewForIdentity:self.eligibleVolumeIdentities[volume.path]];
+        if (!record) continue;
+        NSDictionary *report = record[@"report"];
+        [volumes addObject:@{ @"volume": record[@"name"], @"analyzedAt": @([record[@"date"] timeIntervalSince1970]),
+            @"durationSeconds": record[@"elapsed"], @"complete": report[@"success"] ?: @NO,
+            @"cancelled": report[@"cancelled"] ?: @NO, @"counts": report[@"counts"] ?: @{},
+            @"protectedAppleDouble": report[@"protectedAppleDouble"] ?: @0,
+            @"candidateFileBytes": report[@"candidateFileBytes"] ?: @0, @"errorCount": @([report[@"errors"] count]) }];
+    }
+    return [NSJSONSerialization dataWithJSONObject:@{ @"app": @"DriveSweep", @"schemaVersion": @1,
+        @"note": @"Snapshot di analisi, non garanzia dei file attuali. Dimensioni logiche dei soli file, cartelle escluse; non spazio recuperabile.",
+        @"volumes": volumes } options:NSJSONWritingPrettyPrinted error:nil];
+}
+
+- (void)exportDashboardReport:(id)sender {
+    NSData *data = [self dashboardReportData];
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = @"DriveSweep-report.json";
+    panel.title = @"Esporta analisi dei dischi";
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSError *error = nil;
+    if (![data writeToURL:panel.URL options:NSDataWritingAtomic error:&error]) {
+        [self setDashboardStatusMessage:[NSString stringWithFormat:@"Esportazione non riuscita: %@", error.localizedDescription]];
+    } else [self setDashboardStatusMessage:@"Report salvato. I dati restano sul tuo Mac."];
 }
 
 - (void)notify:(NSString *)message {
@@ -1849,37 +2244,38 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (void)previewAll:(id)sender {
-    NSArray<NSURL *> *volumes = [self.eligibleVolumes copy];
-    NSDictionary<NSString *, NSString *> *identities = [self.eligibleVolumeIdentities copy];
-    NSDictionary<NSString *, id> *options = [self cleanupOptionsSnapshot];
-    if (!volumes.count) {
+    if (self.activeOperation) return;
+    NSMutableArray<DSVolumeTarget *> *targets = [NSMutableArray array];
+    for (NSURL *volume in self.eligibleVolumes) {
+        NSString *identity = self.eligibleVolumeIdentities[volume.path];
+        if (identity.length && ![self isVolumeExcludedForIdentity:identity]) {
+            [targets addObject:[[DSVolumeTarget alloc] initWithVolumeURL:volume mountIdentity:identity]];
+        }
+    }
+    if (!targets.count) {
         [self notify:@"Non ci sono dischi esterni idonei da analizzare."];
         return;
     }
+    [self previewTargets:targets index:0 options:[self cleanupOptionsSnapshot]];
+}
+
+- (void)previewTargets:(NSArray<DSVolumeTarget *> *)targets index:(NSUInteger)index options:(NSDictionary *)options {
+    if (index >= targets.count) return;
+    DSVolumeTarget *target = targets[index];
+    DSOperationState *operation = [self beginOperationKind:DSOperationKindPreview volume:target.volumeURL identity:target.mountIdentity options:options];
+    if (!operation) return;
+    [self refreshDashboard];
     dispatch_async(self.cleanupQueue, ^{
-        NSMutableString *details = [NSMutableString string];
-        NSUInteger candidateTotal = 0;
-        NSUInteger skippedCount = 0;
-        for (NSURL *url in volumes) {
-            NSString *identity = identities[url.path];
-            if (!identity.length || [self isVolumeExcludedForIdentity:identity]) {
-                skippedCount++;
-                [details appendFormat:@"%@ — saltato (regola di esclusione o identità non verificata)\n", url.lastPathComponent];
-                continue;
-            }
-            NSDictionary<NSString *, id> *report = [self previewVolumeOnWorker:url expectedMountIdentity:identity options:options];
-            if (![report[@"success"] boolValue]) {
-                [details appendFormat:@"%@ — Errore: %@\n", url.lastPathComponent, [report[@"errors"] componentsJoinedByString:@"; "]];
-                continue;
-            }
-            NSDictionary<NSString *, NSNumber *> *counts = report[@"counts"];
-            NSUInteger volumeTotal = 0;
-            for (NSString *key in DSCleanupPreferenceKeys()) volumeTotal += [counts[key] unsignedIntegerValue];
-            candidateTotal += volumeTotal;
-            [details appendFormat:@"%@ — %lu candidati, %lu protetti dalla whitelist\n", url.lastPathComponent, (unsigned long)volumeTotal, (unsigned long)[report[@"protectedAppleDouble"] unsignedIntegerValue]];
-        }
+        NSDictionary *report = [self previewInSubprocess:target.volumeURL identity:target.mountIdentity options:options operation:operation];
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self showAggregatePreviewDetails:details candidateTotal:candidateTotal skippedCount:skippedCount];
+            if ([report[@"success"] boolValue] && ![self operationShouldStop:operation] && [self.eligibleVolumeIdentities[target.volumeURL.path] isEqualToString:target.mountIdentity]) [self recordCustomExtensionAnalysisForIdentity:target.mountIdentity options:options];
+            if (![self operationShouldStop:operation] || [report[@"cancelled"] boolValue]) [self recordPreview:report volume:target.volumeURL identity:target.mountIdentity options:options elapsed: NSDate.timeIntervalSinceReferenceDate - operation.startedAt];
+            [self finishOperation:operation result:report];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (![report[@"cancelled"] boolValue] && ![self operationShouldStop:operation]) {
+                    [self previewTargets:targets index:index + 1 options:options];
+                }
+            });
         });
     });
 }
@@ -1891,6 +2287,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)cleanFromMenu:(NSMenuItem *)sender {
     DSVolumeTarget *target = sender.representedObject;
+    if (![self confirmManualCleanupForTarget:target]) return;
     [self cleanVolume:target.volumeURL source:@"manuale" expectedMountIdentity:target.mountIdentity completion:nil];
 }
 
@@ -1910,11 +2307,13 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)cleanFromDashboardButton:(NSButton *)sender {
     DSVolumeTarget *target = [self volumeTargetForDashboardButton:sender];
+    if (![self confirmManualCleanupForTarget:target]) return;
     [self cleanVolume:target.volumeURL source:@"manuale" expectedMountIdentity:target.mountIdentity completion:nil];
 }
 
 - (void)cleanAndEjectFromDashboardButton:(NSButton *)sender {
     DSVolumeTarget *target = [self volumeTargetForDashboardButton:sender];
+    if (![self confirmManualCleanupForTarget:target]) return;
     [self cleanVolume:target.volumeURL source:@"prima dell'espulsione" expectedMountIdentity:target.mountIdentity completion:^(BOOL success) {
         if (!success) {
             [self notify:[NSString stringWithFormat:@"%@ non è stato espulso: la pulizia non è stata completata.", target.volumeURL.lastPathComponent]];
@@ -1981,6 +2380,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 
 - (void)cleanAndEject:(NSMenuItem *)sender {
     DSVolumeTarget *target = sender.representedObject;
+    if (![self confirmManualCleanupForTarget:target]) return;
     [self cleanVolume:target.volumeURL source:@"prima dell'espulsione" expectedMountIdentity:target.mountIdentity completion:^(BOOL success) {
         if (!success) {
             [self notify:[NSString stringWithFormat:@"%@ non è stato espulso: la pulizia non è stata completata.", target.volumeURL.lastPathComponent]];
@@ -1990,20 +2390,45 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     }];
 }
 
-- (void)ejectVolumeTarget:(DSVolumeTarget *)target {
-    if (![self volume:target.volumeURL matchesExpectedMountIdentity:target.mountIdentity]) {
-        [self notify:[NSString stringWithFormat:@"%@ non è stato espulso: il disco è cambiato dopo la pulizia.", target.volumeURL.lastPathComponent]];
-        return;
+- (BOOL)confirmManualCleanupForTarget:(DSVolumeTarget *)target {
+    if (!target.mountIdentity.length || self.activeOperation || [self isVolumeExcludedForIdentity:target.mountIdentity]) return NO;
+    NSDictionary *options = [self cleanupOptionsSnapshot];
+    NSMutableArray *categories = [NSMutableArray array];
+    for (NSString *key in DSCleanupPreferenceKeys()) {
+        if ([self cleanupOption:key isEnabledInOptions:options]) [categories addObject:DSCleanupReportLabel(key)];
     }
+    if (!categories.count) {
+        [self setDashboardStatusMessage:@"Nessuna categoria selezionata. Configura le preferenze prima di pulire."];
+        return NO;
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = [NSString stringWithFormat:@"Pulire %@?", target.volumeURL.lastPathComponent];
+    alert.informativeText = [NSString stringWithFormat:@"Categorie selezionate:\n%@\n\nLa rimozione è definitiva. AppleDouble può contenere metadati utili; il cestino e le estensioni personalizzate possono contenere dati personali. Termina le copie e verifica il backup prima di procedere. L'analisi è uno snapshot: i file possono essere cambiati.", [categories componentsJoinedByString:@" · "]];
+    [alert addButtonWithTitle:@"Annulla"];
+    [alert addButtonWithTitle:@"Pulisci"];
+    [NSApp activateIgnoringOtherApps:YES];
+    return [alert runModal] == NSAlertSecondButtonReturn;
+}
+
+- (BOOL)ejectVerifiedVolumeTarget:(DSVolumeTarget *)target error:(NSError **)error {
+    if (![self volume:target.volumeURL matchesExpectedMountIdentity:target.mountIdentity]) {
+        if (error) *error = [NSError errorWithDomain:@"DriveSweep" code:3 userInfo:@{NSLocalizedDescriptionKey: @"UUID cambiato: espulsione bloccata."}];
+        return NO;
+    }
+    return [[NSWorkspace sharedWorkspace] unmountAndEjectDeviceAtURL:target.volumeURL error:error];
+}
+
+- (void)ejectVolumeTarget:(DSVolumeTarget *)target {
     NSError *error = nil;
-    if (![[NSWorkspace sharedWorkspace] unmountAndEjectDeviceAtURL:target.volumeURL error:&error]) {
+    if (![self ejectVerifiedVolumeTarget:target error:&error]) {
         [self notify:[NSString stringWithFormat:@"Non riesco a espellere %@: %@", target.volumeURL.lastPathComponent, error.localizedDescription]];
     }
 }
 
 - (void)showDashboard:(id)sender {
     if (!self.dashboardWindow) {
-        self.dashboardWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 580)
+        self.dashboardWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 960, 940)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered defer:NO];
         // Keep the retained dashboard instance valid after the user closes it.
@@ -2011,83 +2436,139 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         // a new controller, so AppKit must not release it on close.
         self.dashboardWindow.releasedWhenClosed = NO;
         self.dashboardWindow.title = @"DriveSweep";
-        self.dashboardWindow.minSize = NSMakeSize(600, 480);
+        self.dashboardWindow.minSize = NSMakeSize(780, 850);
         self.dashboardWindow.delegate = self;
         [self.dashboardWindow center];
 
         NSView *content = self.dashboardWindow.contentView;
-        NSTextField *title = [NSTextField labelWithString:@"DriveSweep è attivo"];
-        title.frame = NSMakeRect(24, 526, 560, 32);
-        title.font = [NSFont boldSystemFontOfSize:24];
-        [content addSubview:title];
+        NSTextField *title = DSLabel(@"DriveSweep", 32, NSFontWeightBold, NSColor.labelColor);
+        NSTextField *badge = DSLabel(@"V3.1  /  GRATIS · LOCALE", 11, NSFontWeightSemibold, NSColor.controlAccentColor);
+        NSStackView *heading = DSStack(@[title, badge], NSUserInterfaceLayoutOrientationHorizontal, 20);
+        NSTextField *description = DSLabel(@"Dischi in ordine. File sotto controllo.", 17, NSFontWeightMedium, NSColor.secondaryLabelColor);
+        NSStackView *hero = DSStack(@[heading, description], NSUserInterfaceLayoutOrientationVertical, 5);
 
-        NSTextField *description = [NSTextField wrappingLabelWithString:@"Analizza prima di cancellare. DriveSweep lavora solo su dischi fisici esterni scrivibili e non avvia pulizie automatiche senza il consenso del singolo UUID."];
-        description.frame = NSMakeRect(24, 480, 584, 38);
-        description.font = [NSFont systemFontOfSize:13];
-        [content addSubview:description];
+        self.volumeCountLabel = DSLabel(@"0", 30, NSFontWeightSemibold, NSColor.labelColor);
+        self.candidateCountLabel = DSLabel(@"—", 30, NSFontWeightSemibold, NSColor.controlAccentColor);
+        self.protectedCountLabel = DSLabel(@"—", 30, NSFontWeightSemibold, NSColor.labelColor);
+        self.removedCountLabel = DSLabel(@"0", 30, NSFontWeightSemibold, NSColor.labelColor);
+        NSMutableArray<NSView *> *metrics = [NSMutableArray array];
+        NSArray *values = @[self.volumeCountLabel, self.candidateCountLabel, self.protectedCountLabel, self.removedCountLabel];
+        NSArray *names = @[@"Dischi collegati", @"Candidati rilevati", @"AppleDouble protetti", @"Rimossi nella sessione"];
+        for (NSUInteger i = 0; i < values.count; i++) {
+            [(NSTextField *)values[i] setFont:[NSFont monospacedDigitSystemFontOfSize:30 weight:NSFontWeightSemibold]];
+            NSView *tile = [[DSSurfaceView alloc] init];
+            tile.wantsLayer = YES;
+            tile.layer.backgroundColor = NSColor.controlBackgroundColor.CGColor;
+            tile.layer.cornerRadius = 14;
+            NSStackView *labels = DSStack(@[values[i], DSLabel(names[i], 11, NSFontWeightMedium, NSColor.secondaryLabelColor)], NSUserInterfaceLayoutOrientationVertical, 4);
+            labels.translatesAutoresizingMaskIntoConstraints = NO;
+            [tile addSubview:labels];
+            [NSLayoutConstraint activateConstraints:@[
+                [tile.heightAnchor constraintEqualToConstant:96],
+                [labels.leadingAnchor constraintEqualToAnchor:tile.leadingAnchor constant:18],
+                [labels.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
+                [labels.trailingAnchor constraintLessThanOrEqualToAnchor:tile.trailingAnchor constant:-10]
+            ]];
+            [metrics addObject:tile];
+        }
+        NSStackView *summary = DSStack(metrics, NSUserInterfaceLayoutOrientationHorizontal, 12);
+        summary.distribution = NSStackViewDistributionFillEqually;
 
-        self.dashboardStatusLabel = [NSTextField labelWithString:@""];
-        self.dashboardStatusLabel.frame = NSMakeRect(24, 448, 584, 24);
-        self.dashboardStatusLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-        [content addSubview:self.dashboardStatusLabel];
-
+        self.dashboardStatusLabel = DSLabel(@"Collega un disco per iniziare.", 12, NSFontWeightMedium, NSColor.secondaryLabelColor);
         self.analyzeAllButton = [NSButton buttonWithTitle:@"Analizza tutti" target:self action:@selector(previewAll:)];
-        self.analyzeAllButton.frame = NSMakeRect(24, 404, 150, 34);
         self.analyzeAllButton.bezelStyle = NSBezelStyleRounded;
-        [content addSubview:self.analyzeAllButton];
-
+        self.analyzeAllButton.keyEquivalent = @"r";
+        self.analyzeAllButton.image = [NSImage imageWithSystemSymbolName:@"magnifyingglass" accessibilityDescription:nil];
+        self.analyzeAllButton.imagePosition = NSImageLeft;
+        self.analyzeAllButton.accessibilityLabel = @"Analizza tutti i dischi esterni";
         NSButton *preferences = [NSButton buttonWithTitle:@"Preferenze…" target:self action:@selector(showPreferences:)];
-        preferences.frame = NSMakeRect(186, 404, 130, 34);
         preferences.bezelStyle = NSBezelStyleRounded;
-        [content addSubview:preferences];
-
         self.scheduleButton = [NSButton buttonWithTitle:@"Avvia pianificazione" target:self action:@selector(togglePeriodicCleanup:)];
-        self.scheduleButton.frame = NSMakeRect(330, 404, 210, 34);
         self.scheduleButton.bezelStyle = NSBezelStyleRounded;
         self.scheduleButton.accessibilityLabel = @"Avvia o ferma pulizia periodica";
-        [content addSubview:self.scheduleButton];
+        self.exportReportButton = [NSButton buttonWithTitle:@"Esporta report" target:self action:@selector(exportDashboardReport:)];
+        self.exportReportButton.bezelStyle = NSBezelStyleRounded;
+        NSStackView *toolbar = DSStack(@[self.analyzeAllButton, self.scheduleButton, self.exportReportButton, preferences], NSUserInterfaceLayoutOrientationHorizontal, 10);
 
-        self.operationStatusLabel = [NSTextField labelWithString:@""];
-        self.operationStatusLabel.frame = NSMakeRect(24, 385, 592, 18);
-        self.operationStatusLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-        self.operationStatusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        [content addSubview:self.operationStatusLabel];
-        self.operationProgressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(24, 370, 470, 10)];
+        self.operationStatusLabel = DSLabel(@"Pronto. L'analisi non modifica i file.", 12, NSFontWeightMedium, NSColor.labelColor);
+        self.operationProgressIndicator = [[NSProgressIndicator alloc] init];
         self.operationProgressIndicator.indeterminate = YES;
         self.operationProgressIndicator.hidden = YES;
-        [content addSubview:self.operationProgressIndicator];
         self.cancelOperationButton = [NSButton buttonWithTitle:@"Annulla" target:self action:@selector(cancelActiveOperation:)];
-        self.cancelOperationButton.frame = NSMakeRect(504, 364, 106, 24);
         self.cancelOperationButton.bezelStyle = NSBezelStyleRounded;
         self.cancelOperationButton.hidden = YES;
-        [content addSubview:self.cancelOperationButton];
-
-        self.scheduleCountdownLabel = [NSTextField labelWithString:@"Prossima pulizia: pianificazione ferma"];
-        self.scheduleCountdownLabel.frame = NSMakeRect(24, 348, 592, 16);
-        self.scheduleCountdownLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+        NSStackView *operationRow = DSStack(@[self.operationStatusLabel, self.cancelOperationButton], NSUserInterfaceLayoutOrientationHorizontal, 12);
+        [self.operationStatusLabel setContentCompressionResistancePriority:250 forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [self.cancelOperationButton setContentCompressionResistancePriority:1000 forOrientation:NSLayoutConstraintOrientationHorizontal];
+        self.scheduleCountdownLabel = DSLabel(@"Prossima pulizia: pianificazione ferma", 11, NSFontWeightMedium, NSColor.secondaryLabelColor);
         self.scheduleCountdownLabel.accessibilityLabel = @"Prossima pulizia pianificata";
-        [content addSubview:self.scheduleCountdownLabel];
-
-        self.resourceStatusLabel = [NSTextField labelWithString:@"Impatto pianificazione: guardia CPU/RAM pronta"];
-        self.resourceStatusLabel.frame = NSMakeRect(24, 332, 592, 14);
-        self.resourceStatusLabel.font = [NSFont systemFontOfSize:10];
-        self.resourceStatusLabel.textColor = NSColor.secondaryLabelColor;
+        self.resourceStatusLabel = DSLabel(@"Un disco alla volta · protezione CPU/RAM per la pianificazione", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
         self.resourceStatusLabel.accessibilityLabel = @"Impatto hardware della pianificazione";
-        [content addSubview:self.resourceStatusLabel];
+        NSStackView *activity = DSStack(@[operationRow, self.operationProgressIndicator, self.scheduleCountdownLabel, self.resourceStatusLabel], NSUserInterfaceLayoutOrientationVertical, 6);
 
-        self.dashboardScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(24, 24, 592, 300)];
+        self.cpuGauge = [[DSSpeedometer alloc] init];
+        self.memoryGauge = [[DSSpeedometer alloc] init];
+        self.cpuGauge.accessibilityElement = YES;
+        self.memoryGauge.accessibilityElement = YES;
+        self.cpuGauge.caption = @"CPU · 100% = un core";
+        self.memoryGauge.caption = @"RAM · scala 750 MiB";
+        self.liveTotalsLabel = [NSTextField wrappingLabelWithString:@"Misuro le risorse di DriveSweep e dei processi figli…"];
+        self.liveTotalsLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+        self.liveProcessLabel = [NSTextField wrappingLabelWithString:@""];
+        self.liveProcessLabel.font = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
+        self.liveProcessLabel.textColor = NSColor.secondaryLabelColor;
+        NSButton *details = [NSButton buttonWithTitle:@"Processi live…" target:self action:@selector(showLiveProcesses:)];
+        details.bezelStyle = NSBezelStyleRounded;
+        NSStackView *liveDetails = DSStack(@[self.liveTotalsLabel, self.liveProcessLabel, details], NSUserInterfaceLayoutOrientationVertical, 7);
+        NSStackView *resources = DSStack(@[self.cpuGauge, self.memoryGauge, liveDetails], NSUserInterfaceLayoutOrientationHorizontal, 18);
+        [NSLayoutConstraint activateConstraints:@[
+            [self.cpuGauge.widthAnchor constraintEqualToConstant:170],
+            [self.memoryGauge.widthAnchor constraintEqualToConstant:170],
+            [self.cpuGauge.heightAnchor constraintEqualToConstant:138],
+            [self.memoryGauge.heightAnchor constraintEqualToConstant:138],
+            [liveDetails.widthAnchor constraintEqualToAnchor:resources.widthAnchor constant:-376],
+            [self.liveTotalsLabel.widthAnchor constraintEqualToAnchor:liveDetails.widthAnchor],
+            [self.liveProcessLabel.widthAnchor constraintEqualToAnchor:liveDetails.widthAnchor]
+        ]];
+
+        self.dashboardScrollView = [[NSScrollView alloc] init];
         self.dashboardScrollView.hasVerticalScroller = YES;
         self.dashboardScrollView.autohidesScrollers = YES;
-        self.dashboardScrollView.borderType = NSBezelBorder;
-        self.dashboardScrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        self.dashboardDocumentView = [[DSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 576, 100)];
+        self.dashboardScrollView.drawsBackground = NO;
+        self.dashboardScrollView.borderType = NSNoBorder;
+        self.dashboardDocumentView = [[DSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 896, 100)];
         self.dashboardDocumentView.autoresizingMask = NSViewWidthSizable;
         self.dashboardScrollView.documentView = self.dashboardDocumentView;
-        [content addSubview:self.dashboardScrollView];
+        NSTextField *privacy = DSLabel(@"Solo dischi esterni fisici · nessun account · nessuna telemetria · Apache 2.0", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
+        NSStackView *layout = DSStack(@[hero, summary, toolbar, self.dashboardStatusLabel, activity, resources, self.dashboardScrollView, privacy], NSUserInterfaceLayoutOrientationVertical, 18);
+        layout.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:layout];
+        [NSLayoutConstraint activateConstraints:@[
+            [layout.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:28],
+            [layout.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-28],
+            [layout.topAnchor constraintEqualToAnchor:content.topAnchor constant:26],
+            [layout.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-20],
+            [summary.widthAnchor constraintEqualToAnchor:layout.widthAnchor],
+            [self.dashboardStatusLabel.widthAnchor constraintEqualToAnchor:layout.widthAnchor],
+            [activity.widthAnchor constraintEqualToAnchor:layout.widthAnchor],
+            [resources.widthAnchor constraintEqualToAnchor:layout.widthAnchor],
+            [operationRow.widthAnchor constraintEqualToAnchor:activity.widthAnchor],
+            [self.scheduleCountdownLabel.widthAnchor constraintEqualToAnchor:activity.widthAnchor],
+            [self.resourceStatusLabel.widthAnchor constraintEqualToAnchor:activity.widthAnchor],
+            [self.operationProgressIndicator.widthAnchor constraintEqualToAnchor:activity.widthAnchor],
+            [self.dashboardScrollView.widthAnchor constraintEqualToAnchor:layout.widthAnchor],
+            [self.dashboardScrollView.heightAnchor constraintGreaterThanOrEqualToConstant:180]
+        ]];
+        [self.dashboardScrollView setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+        [self.dashboardScrollView setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
     }
     [self refreshDashboard];
     [self.dashboardWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+    if (notification.object == self.dashboardWindow) [self refreshDashboard];
 }
 
 - (NSButton *)dashboardButtonWithTitle:(NSString *)title action:(SEL)action identity:(NSString *)identity frame:(NSRect)frame enabled:(BOOL)enabled {
@@ -2139,39 +2620,114 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
 }
 
 - (NSView *)dashboardCardForVolume:(NSURL *)volume identity:(NSString *)identity frame:(NSRect)frame {
-    NSBox *card = [[NSBox alloc] initWithFrame:frame];
-    card.boxType = NSBoxCustom;
-    card.cornerRadius = 10;
-    card.titlePosition = NSNoTitle;
-
-    NSImageView *icon = [[NSImageView alloc] initWithFrame:NSMakeRect(16, 66, 40, 40)];
-    icon.image = [[NSWorkspace sharedWorkspace] iconForFile:volume.path];
+    NSView *card = [[DSSurfaceView alloc] initWithFrame:frame];
+    card.wantsLayer = YES;
+    card.layer.backgroundColor = NSColor.controlBackgroundColor.CGColor;
+    card.layer.cornerRadius = 16;
+    CGFloat width = frame.size.width;
+    CGFloat height = frame.size.height;
+    NSImageView *icon = [[NSImageView alloc] initWithFrame:NSMakeRect(20, height - 64, 38, 38)];
+    icon.image = [NSImage imageWithSystemSymbolName:@"externaldrive.fill" accessibilityDescription:@"Disco esterno"];
+    icon.contentTintColor = NSColor.controlAccentColor;
     icon.imageScaling = NSImageScaleProportionallyUpOrDown;
     [card addSubview:icon];
 
     NSTextField *name = [NSTextField labelWithString:volume.lastPathComponent ?: @"Disco esterno"];
-    name.frame = NSMakeRect(68, 86, 360, 24);
-    name.font = [NSFont boldSystemFontOfSize:15];
+    name.frame = NSMakeRect(74, height - 46, width * 0.48 - 74, 24);
+    name.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
+    name.lineBreakMode = NSLineBreakByTruncatingTail;
+    name.toolTip = volume.lastPathComponent;
     [card addSubview:name];
 
     NSString *rule = [self volumeRuleSummaryForIdentity:identity];
     if ([self.scheduledCleanupPaths containsObject:volume.path]) rule = @"Pulizia in corso…";
     if (self.activeOperation) {
         rule = [self.activeOperation.volumeIdentity isEqualToString:identity]
-            ? self.operationStatusLabel.stringValue
+            ? [self operationStatusText:self.activeOperation]
             : [NSString stringWithFormat:@"In attesa: %@ in corso", self.activeOperation.volumeName];
     }
     NSTextField *status = [NSTextField labelWithString:rule];
-    status.frame = NSMakeRect(68, 64, 440, 20);
+    status.frame = NSMakeRect(74, height - 67, width * 0.48 - 74, 20);
     status.font = [NSFont systemFontOfSize:12];
     status.textColor = [self isVolumeExcludedForIdentity:identity] ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    status.lineBreakMode = NSLineBreakByTruncatingTail;
+    status.toolTip = rule;
     [card addSubview:status];
+
+    NSDictionary *capacity = self.volumeCapacity[volume.path];
+    int64_t total = [capacity[NSURLVolumeTotalCapacityKey] longLongValue];
+    int64_t available = [capacity[NSURLVolumeAvailableCapacityKey] longLongValue];
+    NSString *capacityText = total > 0 ? [NSString stringWithFormat:@"%@ liberi di %@",
+        [NSByteCountFormatter stringFromByteCount:available countStyle:NSByteCountFormatterCountStyleFile],
+        [NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile]] : @"Capacità non disponibile";
+    NSTextField *capacityLabel = DSLabel(capacityText, 12, NSFontWeightMedium, NSColor.labelColor);
+    capacityLabel.frame = NSMakeRect(width * 0.52, height - 40, width * 0.48 - 24, 18);
+    capacityLabel.alignment = NSTextAlignmentRight;
+    [card addSubview:capacityLabel];
+    DSCapacityBar *bar = [[DSCapacityBar alloc] initWithFrame:NSMakeRect(width * 0.52, height - 58, width * 0.48 - 24, 7)];
+    bar.usedFraction = total > 0 ? (double)(total - available) / (double)total : 0;
+    bar.accessibilityElement = YES;
+    bar.accessibilityLabel = @"Spazio utilizzato sul disco";
+    bar.accessibilityValue = total > 0 ? [NSString stringWithFormat:@"%.0f percento", bar.usedFraction * 100] : @"Non disponibile";
+    [card addSubview:bar];
+    NSString *format = capacity[NSURLVolumeLocalizedFormatDescriptionKey] ?: @"Disco fisico esterno";
+    NSTextField *formatLabel = DSLabel(format, 10, NSFontWeightRegular, NSColor.secondaryLabelColor);
+    formatLabel.frame = NSMakeRect(width * 0.52, height - 76, width * 0.48 - 24, 14);
+    formatLabel.alignment = NSTextAlignmentRight;
+    [card addSubview:formatLabel];
+
+    NSDictionary *record = [self currentPreviewForIdentity:identity];
+    NSDictionary *report = record[@"report"];
+    NSString *reportTitle = @"Inizia con un'analisi";
+    NSString *reportDetail = @"Scopri i metadati presenti. Nessun file viene modificato durante l'analisi.";
+    if (record) {
+        NSUInteger count = 0;
+        NSMutableArray *categories = [NSMutableArray array];
+        for (NSString *key in DSCleanupPreferenceKeys()) {
+            NSUInteger value = [report[@"counts"][key] unsignedIntegerValue];
+            count += value;
+            if (value) [categories addObject:[NSString stringWithFormat:@"%@: %lu", DSCleanupReportLabel(key), (unsigned long)value]];
+        }
+        NSString *size = [NSByteCountFormatter stringFromByteCount:[report[@"candidateFileBytes"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"HH:mm";
+        NSString *state = [report[@"cancelled"] boolValue] ? @"Annullata" : [report[@"success"] boolValue] ? @"Analizzata" : @"Parziale";
+        reportTitle = [NSString stringWithFormat:@"%@ %@ · %lu candidati · %lu protetti · %.2f s", state, [formatter stringFromDate:record[@"date"]], (unsigned long)count,
+            (unsigned long)[report[@"protectedAppleDouble"] unsignedIntegerValue], [record[@"elapsed"] doubleValue]];
+        reportDetail = [NSString stringWithFormat:@"%@\n%@ di file candidati (cartelle escluse). %@", categories.count ? [categories componentsJoinedByString:@"  ·  "] : @"Nessun candidato rilevato nelle categorie selezionate.", size,
+            [report[@"errors"] count] ? @"Sono presenti errori: apri i dettagli." : @"Snapshot: riesegui dopo nuove copie."];
+        if ([report[@"cancelled"] boolValue]) {
+            reportTitle = [NSString stringWithFormat:@"Analisi annullata alle %@ · nessun file modificato", [formatter stringFromDate:record[@"date"]]];
+            reportDetail = @"Nessun conteggio finale disponibile. Puoi rieseguire l'analisi quando vuoi.";
+        }
+    } else if (self.previewRecords[identity]) {
+        reportTitle = @"Opzioni cambiate · riesegui l'analisi";
+    }
+    NSTextField *reportLabel = DSLabel(reportTitle, 13, NSFontWeightSemibold, NSColor.labelColor);
+    reportLabel.frame = NSMakeRect(24, 102, width - 48, 22);
+    reportLabel.toolTip = reportTitle;
+    [card addSubview:reportLabel];
+    NSTextField *detail = [NSTextField wrappingLabelWithString:reportDetail];
+    detail.font = [NSFont systemFontOfSize:11];
+    detail.textColor = NSColor.secondaryLabelColor;
+    detail.frame = NSMakeRect(24, 55, width - 48, 42);
+    detail.toolTip = reportDetail;
+    [card addSubview:detail];
 
     BOOL excluded = [self isVolumeExcludedForIdentity:identity];
     BOOL identityVerified = identity.length > 0;
     BOOL busy = [self.scheduledCleanupPaths containsObject:volume.path] || self.activeOperation != nil;
     BOOL actionsEnabled = identityVerified && !excluded && !busy;
-    [card addSubview:[self dashboardActionsButtonForVolume:volume identity:identity enabled:actionsEnabled]];
+    NSButton *analyze = [self dashboardButtonWithTitle:@"Analizza" action:@selector(previewFromDashboardButton:) identity:identity frame:NSMakeRect(18, 15, 104, 30) enabled:actionsEnabled];
+    analyze.image = [NSImage imageWithSystemSymbolName:@"magnifyingglass" accessibilityDescription:nil];
+    analyze.imagePosition = NSImageLeft;
+    analyze.accessibilityLabel = [NSString stringWithFormat:@"Analizza %@", volume.lastPathComponent];
+    [card addSubview:analyze];
+    [card addSubview:[self dashboardButtonWithTitle:@"Dettagli" action:@selector(showReportFromDashboard:) identity:identity frame:NSMakeRect(126, 15, 94, 30) enabled:record != nil]];
+    [card addSubview:[self dashboardButtonWithTitle:@"Pulisci ed espelli" action:@selector(cleanAndEjectFromDashboardButton:) identity:identity frame:NSMakeRect(width - 300, 15, 150, 30) enabled:actionsEnabled]];
+    NSButton *actions = [self dashboardActionsButtonForVolume:volume identity:identity enabled:actionsEnabled];
+    actions.frame = NSMakeRect(width - 146, 15, 126, 30);
+    [card addSubview:actions];
     return card;
 }
 
@@ -2180,16 +2736,45 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     self.scheduleButton.title = [self periodicCleanupIsEnabled] ? @"Ferma pianificazione" : @"Avvia pianificazione";
     [self updateScheduleCountdown:nil];
     NSArray<NSURL *> *volumes = self.eligibleVolumes;
+    self.volumeCountLabel.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)volumes.count];
+    NSUInteger candidates = 0, protected = 0, reports = 0;
+    for (NSURL *volume in volumes) {
+        NSString *identity = self.eligibleVolumeIdentities[volume.path];
+        NSDictionary *record = [self currentPreviewForIdentity:identity];
+        NSDictionary *report = record[@"report"];
+        if (!record || ![report[@"success"] boolValue] || [self isVolumeExcludedForIdentity:identity]) continue;
+        reports++;
+        for (NSNumber *count in [report[@"counts"] allValues]) candidates += count.unsignedIntegerValue;
+        protected += [report[@"protectedAppleDouble"] unsignedIntegerValue];
+    }
+    self.candidateCountLabel.stringValue = reports ? [NSString stringWithFormat:@"%lu", (unsigned long)candidates] : @"—";
+    self.protectedCountLabel.stringValue = reports ? [NSString stringWithFormat:@"%lu", (unsigned long)protected] : @"—";
+    self.candidateCountLabel.toolTip = @"Somma degli snapshot di analisi completi, con le opzioni correnti. Riesegui dopo nuove copie.";
+    self.removedCountLabel.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)self.sessionRemovedCount];
+    NSUInteger exportable = 0;
+    for (NSURL *volume in volumes) if ([self currentPreviewForIdentity:self.eligibleVolumeIdentities[volume.path]]) exportable++;
+    self.exportReportButton.enabled = exportable > 0;
+    if (!self.activeOperation) self.operationStatusLabel.stringValue = @"Pronto. L'analisi non modifica i file.";
+    CGFloat width = MAX(700, self.dashboardScrollView.contentSize.width);
     [self.dashboardVolumeTargets removeAllObjects];
     for (NSView *subview in [self.dashboardDocumentView.subviews copy]) [subview removeFromSuperview];
     if (volumes.count == 0) {
         self.dashboardStatusLabel.stringValue = self.dashboardStatusMessage.length ? self.dashboardStatusMessage : @"Nessun disco esterno idoneo collegato.";
         self.analyzeAllButton.enabled = NO;
-        NSTextField *empty = [NSTextField wrappingLabelWithString:@"Collega un disco esterno fisico e scrivibile per iniziare."];
-        empty.frame = NSMakeRect(24, 28, 520, 40);
+        NSImageView *illustration = [[NSImageView alloc] initWithFrame:NSMakeRect(width / 2 - 30, 24, 60, 54)];
+        illustration.image = [NSImage imageWithSystemSymbolName:@"externaldrive.badge.plus" accessibilityDescription:nil];
+        illustration.contentTintColor = NSColor.controlAccentColor;
+        [self.dashboardDocumentView addSubview:illustration];
+        NSTextField *emptyTitle = DSLabel(@"Il prossimo disco, pronto a partire.", 20, NSFontWeightSemibold, NSColor.labelColor);
+        emptyTitle.frame = NSMakeRect(16, 96, width - 32, 28);
+        emptyTitle.alignment = NSTextAlignmentCenter;
+        [self.dashboardDocumentView addSubview:emptyTitle];
+        NSTextField *empty = [NSTextField wrappingLabelWithString:@"Collega una chiavetta, una SD o un disco esterno scrivibile.\nDriveSweep verifica il dispositivo prima di mostrarti le azioni disponibili.\nIl disco interno, le immagini disco e le unità di rete restano esclusi."];
+        empty.frame = NSMakeRect(30, 137, width - 60, 64);
+        empty.alignment = NSTextAlignmentCenter;
         empty.textColor = NSColor.secondaryLabelColor;
         [self.dashboardDocumentView addSubview:empty];
-        self.dashboardDocumentView.frame = NSMakeRect(0, 0, self.dashboardDocumentView.frame.size.width, 88);
+        self.dashboardDocumentView.frame = NSMakeRect(0, 0, width, 224);
         return;
     }
     NSUInteger actionableCount = 0;
@@ -2201,14 +2786,25 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     self.dashboardStatusLabel.stringValue = self.dashboardStatusMessage.length
         ? self.dashboardStatusMessage
         : [NSString stringWithFormat:@"%lu dischi esterni rilevati · profilo %@", (unsigned long)volumes.count, [self cleanupProfileDisplayName:[[NSUserDefaults standardUserDefaults] stringForKey:DSCleanupProfile]]];
-    self.analyzeAllButton.enabled = actionableCount > 0;
-    CGFloat width = self.dashboardDocumentView.frame.size.width;
-    if (width < 560) width = 560;
-    CGFloat y = 16;
+    self.analyzeAllButton.enabled = actionableCount > 0 && !self.activeOperation;
+    CGFloat y = 6;
     for (NSURL *volume in volumes) {
         NSString *identity = self.eligibleVolumeIdentities[volume.path];
-        [self.dashboardDocumentView addSubview:[self dashboardCardForVolume:volume identity:identity frame:NSMakeRect(8, y, width - 16, 122)]];
-        y += 136;
+        [self.dashboardDocumentView addSubview:[self dashboardCardForVolume:volume identity:identity frame:NSMakeRect(0, y, width - 4, 220)]];
+        y += 234;
+    }
+    if (self.recentActivity.count) {
+        NSTextField *heading = DSLabel(@"Attività della sessione", 13, NSFontWeightSemibold, NSColor.labelColor);
+        heading.frame = NSMakeRect(8, y + 10, width - 20, 22);
+        [self.dashboardDocumentView addSubview:heading];
+        y += 40;
+        for (NSString *message in self.recentActivity) {
+            NSTextField *event = DSLabel(message, 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
+            event.frame = NSMakeRect(8, y, width - 24, 20);
+            event.toolTip = message;
+            [self.dashboardDocumentView addSubview:event];
+            y += 26;
+        }
     }
     self.dashboardDocumentView.frame = NSMakeRect(0, 0, width, y);
 }
@@ -2380,6 +2976,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
         [self configurePeriodicCleanupTimer];
     }
     [self refreshPreferenceControls];
+    DSBroadcastPreferences();
     [self rebuildMenu];
 }
 
@@ -2399,6 +2996,7 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     } else {
         [[NSUserDefaults standardUserDefaults] setObject:sender.stringValue forKey:sender.identifier];
     }
+    DSBroadcastPreferences();
     [self rebuildMenu];
 }
 
@@ -2408,14 +3006,44 @@ typedef NS_ENUM(NSUInteger, DSOperationKind) {
     [defaults setInteger:minutes forKey:DSPeriodicCleaningInterval];
     [defaults setObject:DSPeriodicCleaningIntervalUnitMinutes forKey:DSPeriodicCleaningIntervalUnit];
     sender.stringValue = [NSString stringWithFormat:@"%ld", (long)minutes];
+    DSBroadcastPreferences();
     [self configurePeriodicCleanupTimer];
     [self rebuildMenu];
 }
 
 @end
 
-int main(void) {
+#import "CLI.inc"
+
+int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        [[NSUserDefaults standardUserDefaults] registerDefaults:DSDefaultPreferences()];
+        if (argc >= 2 && strcmp(argv[1], "--cli") == 0) {
+            NSArray *arguments = NSProcessInfo.processInfo.arguments;
+            return DSRunCLI([arguments subarrayWithRange:NSMakeRange(2, arguments.count - 2)]);
+        }
+        if (argc == 4 && strcmp(argv[1], "--preview-worker") == 0) {
+            NSData *input = [[NSFileHandle fileHandleWithStandardInput] readDataToEndOfFile];
+            NSMutableDictionary *options = [[NSJSONSerialization JSONObjectWithData:input options:NSJSONReadingMutableContainers error:nil] mutableCopy];
+            if (![options isKindOfClass:NSMutableDictionary.class]) return 2;
+            for (NSString *key in @[DSAppleDoubleExtensions, DSCustomFileExtensions]) {
+                id values = options[key];
+                if (![values isKindOfClass:NSArray.class]) return 2;
+                options[key] = [NSSet setWithArray:values];
+            }
+            DriveSweepController *controller = [[DriveSweepController alloc] init];
+            controller.previewWorker = YES;
+            DSOperationState *operation = [[DSOperationState alloc] init];
+            operation.volumeURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[2]]];
+            operation.volumeName = operation.volumeURL.lastPathComponent;
+            operation.totalCategories = [controller enabledCategoryCountForOptions:options];
+            NSDictionary *report = [controller previewVolumeOnWorker:operation.volumeURL expectedMountIdentity:[NSString stringWithUTF8String:argv[3]] options:options operation:operation];
+            NSData *data = [NSJSONSerialization dataWithJSONObject:report options:0 error:nil];
+            if (!data) return 2;
+            fwrite(data.bytes, 1, data.length, stdout);
+            fputc('\n', stdout);
+            return 0;
+        }
         NSApplication *app = [NSApplication sharedApplication];
         DriveSweepController *controller = [[DriveSweepController alloc] init];
         app.delegate = controller;

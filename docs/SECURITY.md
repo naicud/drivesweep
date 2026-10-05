@@ -1,51 +1,41 @@
-# Security and distribution status
+# Sicurezza, dati e distribuzione
 
-## Current release status
+DriveSweep 3.1.0 è gratuito, Apache-2.0. App e CLI usano lo stesso motore locale senza rete, account, telemetria, helper privilegiati o servizi nascosti. Il Cask resta alla release pubblica 0.4.11 fino alla pubblicazione verificata della nuova versione.
 
-DriveSweep `v0.4.11` is free, open source under Apache-2.0, and ad-hoc signed for bundle integrity. It is **not Developer ID signed or Apple-notarized**. macOS therefore may display a downloaded-app warning when you open the DMG build normally.
+## Firma e provenienza
 
-Apple notarization is a paid distribution service because it requires membership in the Apple Developer Program and a Developer ID certificate. There is no free setting that makes macOS show a third-party downloadable app as Apple-verified for every user.
+Firma ad-hoc: `codesign --verify --deep --strict` verifica integrità, non equivale a Developer ID, notarizzazione o revisione antivirus di Apple. [Installazione](INSTALLATION.md) distingue checksum locali e pubblici: l'hash 0.4.11 non vale per 3.1.
 
-For a free local installation, use either:
+## Target e identità
 
-- Homebrew followed by `xattr -d com.apple.quarantine /Applications/DriveSweep.app`; or
-- a trusted DMG with its SHA-256 checked, followed by Control-click → **Open** or removal of quarantine from `/Applications/DriveSweep.app`; or
-- a local build from this repository.
+- Solo volumi esterni fisici scrivibili: classificazione machine-readable di `diskutil`, caratteristiche del volume e VolumeUUID verificabili.
+- CLI: radice assoluta esatta del mount, senza sottocartelle, target interni, rete, immagini o fallback al nome.
+- Prima di pulizia e categorie distruttive si ricontrollano idoneità, UUID ed esclusioni. Cambio disco ferma il lavoro.
+- Traversate senza symlink o attraversamento del dispositivo, con radici riservate protette. Estensioni custom escludono pacchetti, link e directory protette.
+- Espulsione ordinaria, mai forzata, con UUID ricontrollato. Fallimento e annullamento impediscono l'espulsione successiva.
 
-These choices change local launch handling only. They do not mean that Apple has scanned, notarized, or approved the app.
+## Consenso ed effetti
 
-## Verify a release
+Rimozione **definitiva**. `.DS_Store` contiene stato Finder; AppleDouble può contenere resource fork e attributi. `.Trashes` può contenere documenti recuperabili; le estensioni custom selezionano file reali. Default: `.DS_Store` e AppleDouble selezionati per manuale, avanzate e automazioni globali spente.
 
-The `v0.4.11` DMG SHA-256 is:
+La GUI conferma le categorie. La CLI richiede `PULISCI` oppure `--yes`, senza saltare esclusioni o controlli. Nessun `clean --all`. Automazione = globale più consenso VolumeUUID. Le estensioni custom richiedono analisi completa e consenso al fingerprint corrente per ogni disco: cambiare lista lo invalida. `config set` non consente di iniettare `volumeRules`.
 
-```text
-c059f39fecd787e47cbb2ece6f647555ff6611e222f23fd1801bb41a29292d14
-```
+Un lock esclusivo coordina app/daemon per le automazioni, un altro il motore per ogni pulizia. Lock per utente, `O_NOFOLLOW`, controlli proprietario/file regolare/link count e `flock`; descriptor chiusi anche all'uscita anomala. Inode stabile, nessun dato utente nei lock. Non coordinano programmi terzi o altri utenti.
 
-Calculate it after downloading:
+## Annullamento e filesystem
 
-```sh
-shasum -a 256 DriveSweep.dmg
-```
+Analisi in figlio di sola lettura: annullamento libera il runner principale e termina il figlio; SIGKILL solo per quel worker. Un figlio non ancora uscito impedisce ulteriori scanner. Pulizia distruttiva cooperativa dopo il ritorno della chiamata filesystem corrente; annullare non recupera file già rimossi.
 
-Compare the entire output with the value above and download only from the official [GitHub releases page](https://github.com/naicud/drivesweep/releases).
+I/O lento o guasto può rimanere nel kernel. UUID e confini riducono il rischio, senza garantire una transazione atomica contro ogni modifica concorrente. Report parziale/annullato non è successo completo. TCC e permessi sono rispettati; nessuna modifica delle protezioni macOS.
 
-## What the app accesses
+## Risorse e report
 
-DriveSweep runs locally. It has no telemetry, account system, subscription, or networking code. It asks macOS's `diskutil` which mounted volumes are physical and external, then performs configured file-removal operations only inside eligible external writable volumes.
+`libproc` legge CPU, physical footprint, RSS, I/O e thread della famiglia DriveSweep dello stesso utente e dei figli. Massimo 128 PID e 60 campioni in memoria. CPU/I/O iniziali `null`, dati mancanti e troncamento espliciti. RAM condivisa può essere contata in più righe. Nessun invio automatico.
 
-It does not touch the startup disk, disk images, network shares, read-only volumes, or a drive explicitly excluded in Preferences. Automatic cleanup is off by default and is a two-part consent: the global automatic setting must be enabled and the exact stable VolumeUUID must have an explicit automatic-cleanup rule. It waits briefly, rechecks the mount identity and that UUID rule, and then cleans an approved mount once. DriveSweep does not descend into a distinct nested filesystem mount. For a final pass, choose **Clean and eject** after copying is complete.
+La protezione periodica controlla runner e propri figli, senza includere altre istanze: ogni 2 s, sospensione dopo due superamenti consecutivi di 80% CPU di un core o 750 MiB RSS. Non è un limite del kernel né un ottimizzatore RAM del Mac.
 
-## Target identity and filesystem boundaries
+Report = snapshot; byte logici dei soli file, non spazio recuperabile garantito. Export CLI può contenere percorsi dei volumi/errori: controllalo prima di condividere. Export dashboard esclude percorsi privati degli errori. I risultati dell'app con opzioni superate vengono invalidati.
 
-An action keeps the selected mount URL together with its VolumeUUID; there is no fallback to a device-wide DiskUUID. Before each destructive cleanup category, DriveSweep compares that UUID with the mounted target again. An unmount of the active target also requests cancellation and invalidates custom-extension analysis consent for that UUID. If the target changed, later categories are not run and the operation reports the identity failure. The same check occurs immediately before **Clean and eject** asks macOS to eject a device.
+## Prove e segnalazioni
 
-Traversal uses physical filesystem entries, does not follow symlinks, and does not cross into a different device. Before removing a matching item at a drive root, the app checks its final `lstat` type, rejects symlinks and special files, and requires it to belong to the source filesystem. This is defense in depth, not a substitute for backups: metadata cleanup is still deletion and cannot be undone by DriveSweep.
-
-## Data effects
-
-Analyze is non-destructive and reports category counts, whitelist-protected AppleDouble files, and scan errors. Removing `._*` files can discard macOS-only metadata such as custom icons and legacy resource forks. Add extensions to the AppleDouble whitelist when that metadata must be retained. The default Cross-platform sharing profile enables AppleDouble and `.DS_Store`; the Preserve Mac metadata profile removes only `.DS_Store`; custom mode retains individual choices. `.Trashes`, `.Spotlight-V100`, `.fseventsd`, `.apdisk`, `.VolumeIcon.icns`, `Desktop.ini`, `Thumbs.db`, `.TemporaryItems`, and `.AppleDouble` directories are opt-in. Test first on a disposable USB drive and exclude any volume where that metadata matters.
-
-## For maintainers
-
-Do not describe a release as “Apple verified,” “notarized,” or “malware-free” unless it has actually been Developer ID signed, notarized by Apple, and stapled. If that paid distribution path is added in the future, document the certificate identity, hardened-runtime configuration, notarization submission, and stapling step in the release process.
+`make test`: fixture sacrificabili, identity/consent boundaries, symlink, directory protette, IPC, annullamento, lock e CLI reale senza pulizie di dati utente. [Evidenze](V3.md) separa fixture e prove hardware. Segnala problemi al manutentore evitando documenti personali o credenziali nei log.

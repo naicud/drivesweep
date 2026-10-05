@@ -9,7 +9,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Run build checks
+      - name: Test native app, shared engine and CLI
         run: make test
       - name: Build disk image
         run: make dmg
